@@ -1,8 +1,10 @@
 {
   "dependencies": {
+    "fs": "^0.0.1-security",
     "node": "^20.19.5",
     "path": "^0.12.7",
-    "promises": "^0.2.5"
+    "promises": "^0.2.5",
+    "url": "^0.11.4"
   },
   "name": "plauncher",
   "version": "1.0.0",

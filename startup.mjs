@@ -15,5 +15,5 @@ const parsed = Object.fromEntries(
     return [k.trim(), Number.isNaN(num) ? v : num];
     })
 );
-
+console.log(parsed)
 export default parsed

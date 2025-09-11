@@ -1,5 +1,8 @@
-const { app, BrowserWindow } = require('electron/main')
+const { app, BrowserWindow, ipcMain } = require('electron/main')
 const path = require('node:path')
+const { pathToFileURL } = require('url');
+
+
 
 const createWindow = () => {
   const win = new BrowserWindow({
@@ -8,18 +11,23 @@ const createWindow = () => {
     frame: false,
     transparent: true,
     resizeble: false,
-    
     webPreferences: {
-        preload: path.join(__dirname, 'preload.js')
+        preload: path.join(__dirname, 'preload.js'),
+        contextIsolation: true,
+        nodeIntegration: false
         
     }
   })
   win.isResizable(false)
-//   win.webContents.openDevTools();
+  win.webContents.openDevTools();
   win.loadFile('index.html')
 }
 
 app.whenReady().then(async () => {
+    const startup = await import(pathToFileURL(path.join(__dirname, 'startup.mjs')).href);
+    const data = startup.default
+    console.log(data)
+    ipcMain.handle('get-startup-data', () => data);
     try {
       await import(path.join(app.getAppPath(), 'startup.mjs'));
       console.log('startup script finished');
