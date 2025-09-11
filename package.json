@@ -1,0 +1,28 @@
+{
+  "dependencies": {
+    "node": "^20.19.5",
+    "path": "^0.12.7",
+    "promises": "^0.2.5"
+  },
+  "name": "plauncher",
+  "version": "1.0.0",
+  "description": "",
+  "main": "main.js",
+  "devDependencies": {
+    "electron": "^38.1.0"
+  },
+  "scripts": {
+    "start": "electron .",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PyroKsen/PLauncher.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/PyroKsen/PLauncher/issues"
+  },
+  "homepage": "https://github.com/PyroKsen/PLauncher#readme"
+}

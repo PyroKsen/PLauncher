@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <!-- https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'"
+    />
+    <meta
+      http-equiv="X-Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'"
+    />
+    <link rel="stylesheet" type="text/css" href="style.css">
+  </head>
+  <body>
+
+    <main class="main">
+      <aside class="sidebar">
+        <h1 class="sidebar__title">PLauncher</h1>
+        <div class="sidebar__divider"></div>
+        <button class="sidebar__button">barotrauma</button>
+      </aside>
+      <!-- <div class="base">
+        <div class="base__top">
+          <div class="base__top-left">
+
+          </div>
+          <div class="base__top-right">
+
+          </div>
+        </div>
+        <div class="base__bottom">
+
+        </div>
+      </div> -->
+    </main>
+
+  </body>
+  <script src="./renderer.js"></script>
+</html>
