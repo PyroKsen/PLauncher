@@ -20,7 +20,7 @@ h1 {
     display: flex;
     width: 100%;
     height: 690px;
-    background: url(assets/images/image.png);
+    background: url(assets/images/backgroundBarotrauma.png);
     overflow: hidden;
 }
 
@@ -66,33 +66,48 @@ h1 {
 }
 
 .base {
+    -webkit-app-region: no-drag;
     display: table-column;
     width: 100%;
     height: 100%;
 }
 
 .base__top {
+    -webkit-app-region: no-drag;
     display: flex;
     width: 100%;
     height: 90%;
 }
 
 .base__top-left {
+    -webkit-app-region: no-drag;
     width: 50%;
     height: 100%;
 }
 
 .base__top-right {
+    -webkit-app-region: no-drag;
     display: flex;
     width: 50%;
     height: 100%;
 }
 
 .base__bottom {
+    color: white;
+    -webkit-app-region: no-drag;
     width: 100%;
     height: 10%;
 }
 
 .spisok__element {
     color: white;
+}
+
+.no-drag {
+    -webkit-app-region: no-drag;
+}
+
+button {
+    width: 70px;
+    height: 30px;
 }

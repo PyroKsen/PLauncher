@@ -49,8 +49,13 @@
             </ul> -->
           </div>
         </div>
-        <div class="base__bottom">
-
+        <div class="base__bottom" id="progress-section">
+          <button id="downloadBtn" class="no-drag">load</button>
+          <label id="progress-label">Ожидание скачивания...</label>
+          <progress id="combined-progress" value="0" max="100"></progress>
+          <span id="combined-percent">0%</span>
+          <button id="launch-btn" class="no-drag">play</button>
+          <label id="game-status">status</label>
         </div>
       </div>
     </main>
