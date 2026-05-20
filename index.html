@@ -19,7 +19,9 @@
       <aside class="sidebar">
         <h1 class="sidebar__title">PLauncher</h1>
         <div class="sidebar__divider"></div>
-        <button class="sidebar__button">barotrauma</button>
+        <button class="sidebar__button sidebar__button--active" data-game="Barotrauma">barotrauma</button>
+        <button class="sidebar__button" data-game="LethalCompany">lethal company</button>
+        <button class="sidebar__button" data-game="SlayTheSpire2">slay the spire 2</button>
       </aside>
       <div class="base">
         <div class="base__top">
@@ -28,34 +30,19 @@
           </div>
           <div class="base__top-right">
             <ul class="spisok">
-              <li class="spisok__element" id="version-b">?</li>
-              <li class="spisok__element">2</li>
-              <li class="spisok__element">3</li>
-              <li class="spisok__element">4</li>
-              <li class="spisok__element">5</li>
-              <li class="spisok__element">6</li>
-              <li class="spisok__element">7</li>
-              <li class="spisok__element">8</li>
+              <li class="spisok__element" id="version-b"></li>
+              <li class="spisok__element" id="local-version"></li>
+              <li class="spisok__element" id="server-version"></li>
             </ul>
-            <!-- <ul class="spisok">
-              <li class="spisok__element" id="version-b2">1</li>
-              <li class="spisok__element">2</li>
-              <li class="spisok__element">3</li>
-              <li class="spisok__element">4</li>
-              <li class="spisok__element">5</li>
-              <li class="spisok__element">6</li>
-              <li class="spisok__element">7</li>
-              <li class="spisok__element">8</li>
-            </ul> -->
           </div>
         </div>
         <div class="base__bottom" id="progress-section">
-          <button id="downloadBtn" class="no-drag">load</button>
-          <label id="progress-label">Ожидание скачивания...</label>
           <progress id="combined-progress" value="0" max="100"></progress>
           <span id="combined-percent">0%</span>
+          <span id="download-stats" class="download-stats"></span>
+          <button id="download-btn" class="no-drag">load</button>
+          <button id="cancel-btn" class="no-drag" disabled>cancel</button>
           <button id="launch-btn" class="no-drag">play</button>
-          <label id="game-status">status</label>
         </div>
       </div>
     </main>

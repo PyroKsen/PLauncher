@@ -1,24 +1,26 @@
 {
   "dependencies": {
-    "extract-zip": "^2.0.1",
-    "fs": "^0.0.1-security",
     "fs-extra": "^11.3.1",
-    "node": "^20.19.5",
-    "path": "^0.12.7",
-    "promises": "^0.2.5",
-    "unzipper": "^0.12.3",
-    "url": "^0.11.4"
+    "unzipper": "^0.12.3"
   },
   "name": "plauncher",
   "version": "1.0.0",
   "description": "",
   "main": "main.js",
   "devDependencies": {
-    "electron": "^38.1.0"
+    "electron": "^38.1.0",
+    "electron-builder": "^26.8.1"
   },
   "scripts": {
     "start": "electron .",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "electron-builder --win portable"
+  },
+  "build": {
+    "win": {
+      "target": "portable",
+      "signAndEditExecutable": false
+    }
   },
   "repository": {
     "type": "git",
