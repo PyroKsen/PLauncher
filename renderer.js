@@ -10,8 +10,13 @@ const mainEl = document.querySelector(".main");
 const status = document.getElementById("version-b");
 const localVersion = document.getElementById("local-version");
 const serverVersion = document.getElementById("server-version");
+const serverSource = document.getElementById("server-source");
+const minimizeWindowBtn = document.getElementById("minimize-window-btn");
+const closeWindowBtn = document.getElementById("close-window-btn");
+const checkBtn = document.getElementById("check-btn");
 const downloadBtn = document.getElementById("download-btn");
 const cancelBtn = document.getElementById("cancel-btn");
+const openFolderBtn = document.getElementById("open-folder-btn");
 const launchBtn = document.getElementById("launch-btn");
 const combinedProgress = document.getElementById("combined-progress");
 const combinedPercent = document.getElementById("combined-percent");
@@ -43,6 +48,7 @@ let isDownloadPaused = false;
 let downloadInProgress = false;
 let gameRunning = false;
 let actionLock = false;
+let versionCheckInProgress = false;
 
 let downloadPercent = 0;
 let extractPercent = 0;
@@ -65,12 +71,13 @@ function getPresence(gameName) {
     remoteAvailable: false,
     local: null,
     remote: null,
-    downloadUrl: ""
+    downloadUrl: "",
+    remoteSource: null
   };
 }
 
-function setPresence(gameName, installed, exeExists, updateAvailable = false, local = null, remote = null, remoteAvailable = false, downloadUrl = "") {
-  gamePresence[gameName] = { installed, exeExists, updateAvailable, local, remote, remoteAvailable, downloadUrl };
+function setPresence(gameName, installed, exeExists, updateAvailable = false, local = null, remote = null, remoteAvailable = false, downloadUrl = "", remoteSource = null) {
+  gamePresence[gameName] = { installed, exeExists, updateAvailable, local, remote, remoteAvailable, downloadUrl, remoteSource };
 }
 
 function setStatusText(text) {
@@ -93,6 +100,36 @@ function setVersionText(local, remote) {
   }
 }
 
+function formatRemoteSource(source) {
+  if (source === "github") return "GitHub";
+  if (source === "yandex") return "Yandex Disk";
+  return "-";
+}
+
+function setSourceText(source) {
+  if (serverSource) {
+    serverSource.textContent = "источник версии: " + formatRemoteSource(source);
+  }
+}
+
+function renderCurrentGameStatus() {
+  const presence = getPresence(currentGame);
+  setVersionText(presence.local, presence.remote);
+  setSourceText(presence.remoteSource);
+
+  if (!presence.remoteAvailable) {
+    status.textContent = "версия сервера недоступна";
+  } else if (!presence.exeExists) {
+    status.textContent = "игра не установлена";
+  } else if (presence.updateAvailable) {
+    status.textContent = "доступно обновление";
+  } else {
+    status.textContent = "игра установлена";
+  }
+
+  updatePlayButton();
+}
+
 function updateCombinedProgress() {
   const combined = Math.round(downloadPercent * DOWNLOAD_WEIGHT + extractPercent * EXTRACT_WEIGHT);
   combinedProgress.value = combined;
@@ -101,6 +138,10 @@ function updateCombinedProgress() {
 
 function formatMegabytes(bytes) {
   return (bytes / 1024 / 1024).toFixed(1);
+}
+
+function formatMegabytesOrDash(bytes) {
+  return typeof bytes === "number" ? formatMegabytes(bytes) : "-";
 }
 
 function resetDownloadStats() {
@@ -136,6 +177,27 @@ function updateDownloadStats(info) {
     ? formatMegabytes(received) + " / " + formatMegabytes(total) + " MB"
     : formatMegabytes(received) + " MB";
   downloadStats.textContent = loadedText + " · " + formatMegabytes(currentDownloadSpeedBps) + " MB/s";
+}
+
+async function pauseActiveDownload(statusText) {
+  if (!downloadInProgress || currentPhase !== "download" || !activeDownloadUrl) return;
+
+  isDownloadPaused = true;
+  currentDownloadSpeedBps = 0;
+  if (statusText) setStatusText(statusText);
+
+  try {
+    const res = await window.api.controlDownload("pause", activeDownloadUrl);
+    if (!res || !res.ok) {
+      console.warn("auto pause failed", res);
+    } else if (typeof res.paused === "boolean") {
+      isDownloadPaused = res.paused;
+    }
+  } catch (err) {
+    console.warn("auto pause ipc error:", err);
+  } finally {
+    updatePlayButton();
+  }
 }
 
 function updateDownloadButton() {
@@ -178,9 +240,22 @@ function updateCancelButton() {
   cancelBtn.disabled = !(downloadInProgress && currentPhase === "download" && activeDownloadUrl);
 }
 
+function updateCheckButton() {
+  if (!checkBtn) return;
+  checkBtn.disabled = downloadInProgress || versionCheckInProgress;
+}
+
+function updateFolderButton() {
+  if (!openFolderBtn) return;
+  const presence = getPresence(currentGame);
+  openFolderBtn.disabled = downloadInProgress || !presence.installed;
+}
+
 function updatePlayButton() {
   updateDownloadButton();
   updateCancelButton();
+  updateCheckButton();
+  updateFolderButton();
 
   if (gameRunning) {
     launchBtn.textContent = "running";
@@ -204,8 +279,9 @@ function updatePlayButton() {
   launchBtn.disabled = true;
 }
 
-function setCurrentGame(gameName) {
+function setCurrentGame(gameName, options = {}) {
   if (!GAMES[gameName]) return;
+  const shouldRefresh = options.refresh !== false;
   if (downloadInProgress) {
     setStatusText("идет загрузка, переключение недоступно");
     return;
@@ -225,12 +301,39 @@ function setCurrentGame(gameName) {
     mainEl.style.backgroundImage = "url(" + GAMES[gameName].background + ")";
   }
 
-  refreshVersionState(gameName);
+  if (shouldRefresh) {
+    refreshVersionState(gameName);
+  } else {
+    renderCurrentGameStatus();
+  }
   updatePlayButton();
 }
 
 gameButtons.forEach(btn => {
   btn.addEventListener("click", () => setCurrentGame(btn.dataset.game));
+});
+
+minimizeWindowBtn.addEventListener("click", () => {
+  window.api.minimizeWindow();
+});
+
+closeWindowBtn.addEventListener("click", () => {
+  window.api.closeWindow();
+});
+
+checkBtn.addEventListener("click", () => {
+  refreshAllGames();
+});
+
+window.addEventListener("offline", () => {
+  pauseActiveDownload("соединение прервано, загрузка на паузе");
+});
+
+window.addEventListener("online", () => {
+  if (downloadInProgress && currentPhase === "download" && isDownloadPaused) {
+    setStatusText("соединение восстановлено, нажмите resume");
+    updatePlayButton();
+  }
 });
 
 setInterval(() => {
@@ -256,7 +359,8 @@ downloadBtn.addEventListener("click", async () => {
       if (!res || !res.ok) {
         console.warn("download-control failed", res);
       } else {
-        isDownloadPaused = !isDownloadPaused;
+        isDownloadPaused = typeof res.paused === "boolean" ? res.paused : action === "pause";
+        setStatusText(isDownloadPaused ? "загрузка на паузе" : "загрузка продолжается");
       }
     } finally {
       actionLock = false;
@@ -296,8 +400,15 @@ downloadBtn.addEventListener("click", async () => {
         setStatusText("версия сервера недоступна");
       } else if (res.error === "download_url_unavailable") {
         setStatusText("ссылка для скачивания не указана");
+      } else if (res.error === "download_already_running") {
+        setStatusText("уже идет загрузка");
+      } else if (res.error === "not_enough_space") {
+        setStatusText("недостаточно места");
+        if (downloadStats) {
+          downloadStats.textContent = "свободно " + formatMegabytesOrDash(res.freeBytes) + " MB, нужно " + formatMegabytesOrDash(res.requiredBytes) + " MB";
+        }
       }
-      console.log("Download canceled by user");
+      console.log("Download did not start", res.error || "canceled");
     } else {
       console.log("Download started, saving to", res.path);
     }
@@ -323,6 +434,32 @@ cancelBtn.addEventListener("click", async () => {
     } else {
       setStatusText("отмена загрузки...");
     }
+  } finally {
+    actionLock = false;
+    updatePlayButton();
+  }
+});
+
+openFolderBtn.addEventListener("click", async () => {
+  if (actionLock || downloadInProgress) return;
+
+  const presence = getPresence(currentGame);
+  if (!presence.installed) {
+    setStatusText("папка игры не найдена");
+    updatePlayButton();
+    return;
+  }
+
+  actionLock = true;
+  try {
+    const res = await window.api.openGameFolder(currentGame);
+    if (!res || !res.ok) {
+      setStatusText(res && res.error === "not_found" ? "папка игры не найдена" : "ошибка открытия папки");
+      console.warn("open folder failed", res);
+    }
+  } catch (err) {
+    setStatusText("ошибка открытия папки");
+    console.error("open folder ipc error:", err);
   } finally {
     actionLock = false;
     updatePlayButton();
@@ -366,6 +503,11 @@ window.api.onDownloadProgress(info => {
   currentPhase = "download";
   latestDownloadInfo = info;
   downloadInProgress = true;
+  isDownloadPaused = !!info.paused || info.state === "interrupted";
+  if (isDownloadPaused) {
+    currentDownloadSpeedBps = 0;
+    setStatusText(info.canResume ? "соединение прервано, загрузка на паузе" : "загрузка прервана");
+  }
   downloadPercent = info.total > 0 ? Math.round((info.received / info.total) * 100) : 0;
   updateDownloadStats(info);
   if (!info.total || info.total === 0) {
@@ -378,6 +520,7 @@ window.api.onDownloadProgress(info => {
     lastLoggedPercent = downloadPercent;
   }
   updateCombinedProgress();
+  updatePlayButton();
 });
 
 window.api.onDownloadDone(info => {
@@ -461,44 +604,65 @@ window.api.onGameError(info => {
   console.error("game error:", info.error || info.message || JSON.stringify(info));
 });
 
-async function refreshVersionState(gameName) {
+async function refreshVersionState(gameName, options = {}) {
+  const showLoading = options.showLoading !== false;
+
   try {
-    status.textContent = "проверка...";
-    setVersionText(null, null);
+    if (showLoading && gameName === currentGame) {
+      status.textContent = "проверка...";
+      setVersionText(null, null);
+      setSourceText(null);
+      updatePlayButton();
+    }
+
     const res = await window.api.checkVersion(gameName);
     if (!res.ok) {
-      status.textContent = "ошибка проверки версии";
-      updatePlayButton();
+      if (gameName === currentGame) {
+        status.textContent = "ошибка проверки версии";
+        updatePlayButton();
+      }
       return;
     }
 
-    setPresence(gameName, !!res.installed, !!res.exeExists, !!res.updateAvailable, res.local, res.remote, !!res.remoteAvailable, res.downloadUrl || "");
-    setVersionText(res.local, res.remote);
-
-    if (!res.remoteAvailable) {
-      status.textContent = "версия сервера недоступна";
-      updatePlayButton();
-      return;
-    }
-
-    if (!res.exeExists) {
-      status.textContent = "игра не установлена";
-      updatePlayButton();
-      return;
-    }
-
-    if (res.updateAvailable) {
-      status.textContent = "доступно обновление";
-    } else {
-      status.textContent = "игра установлена";
+    setPresence(gameName, !!res.installed, !!res.exeExists, !!res.updateAvailable, res.local, res.remote, !!res.remoteAvailable, res.downloadUrl || "", res.remoteSource || null);
+    if (gameName === currentGame) {
+      renderCurrentGameStatus();
     }
   } catch (err) {
     console.error("refreshVersionState error:", err);
-    status.textContent = "ошибка при проверке версии";
-    setVersionText(null, null);
+    if (gameName === currentGame) {
+      status.textContent = "ошибка при проверке версии";
+      setVersionText(null, null);
+      setSourceText(null);
+    }
   } finally {
+    if (gameName === currentGame) {
+      updatePlayButton();
+    }
+  }
+}
+
+async function refreshAllGames() {
+  if (versionCheckInProgress || downloadInProgress) return;
+
+  versionCheckInProgress = true;
+  status.textContent = "проверка...";
+  setVersionText(null, null);
+  setSourceText(null);
+  updatePlayButton();
+
+  const checks = Object.keys(GAMES).map(gameName => (
+    refreshVersionState(gameName, { showLoading: gameName === currentGame })
+  ));
+
+  try {
+    await Promise.allSettled(checks);
+  } finally {
+    versionCheckInProgress = false;
+    renderCurrentGameStatus();
     updatePlayButton();
   }
 }
 
-setCurrentGame(currentGame);
+setCurrentGame(currentGame, { refresh: false });
+refreshAllGames();

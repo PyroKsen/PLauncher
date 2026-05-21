@@ -2,6 +2,9 @@ const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('api', {
   getStartupData: () => ipcRenderer.invoke('get-startup-data'),
+  minimizeWindow: () => ipcRenderer.invoke('minimize-window'),
+  closeWindow: () => ipcRenderer.invoke('close-window'),
+  openGameFolder: (gameName) => ipcRenderer.invoke('open-game-folder', gameName),
   startDownload: (url, gameName, remoteVersion) => ipcRenderer.invoke('start-download', url, gameName, remoteVersion),
   controlDownload: (action, url) => ipcRenderer.invoke('download-control', action, url),
   onExtractStart: (cb) => ipcRenderer.on('extract-start', (e, d) => cb(d)),

@@ -1,4 +1,5 @@
 const { app, BrowserWindow, ipcMain, session } = require('electron/main')
+const { shell } = require('electron')
 const path = require('node:path')
 const { pathToFileURL } = require('url');
 const fs = require('fs');
@@ -14,6 +15,10 @@ const pending = new Map(); // url -> { savePath, gameName, version }
 const active = new Map(); // url -> DownloadItem
 const activePaths = new Map(); // url -> savePath
 const activeMetadata = new Map(); // url -> { savePath, gameName, version }
+const FREE_SPACE_BUFFER_BYTES = 512 * 1024 * 1024;
+const DOWNLOAD_SPACE_MULTIPLIER = 2;
+const DOWNLOAD_FILE_PREFIX = '.plauncher-download-';
+const WRITE_TEST_PREFIX = '.pl_launcher_write_test_';
 
 const createWindow = () => {
   const win = new BrowserWindow({
@@ -38,7 +43,6 @@ const createWindow = () => {
   win.setResizable(false)
   win.setMaximizable(false)
   win.setFullScreenable(false)
-  win.webContents.openDevTools();
   win.loadFile('index.html')
 }
 
@@ -157,6 +161,138 @@ async function saveLocalVersions(obj) {
   }
 }
 
+function getSafeDownloadName(gameName) {
+  const rawName = String(gameName || 'game');
+  const safeName = rawName.replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '') || 'game';
+  return `${DOWNLOAD_FILE_PREFIX}${safeName}-${Date.now()}.zip`;
+}
+
+function isLauncherTemporaryFile(fileName) {
+  return (
+    fileName.startsWith(DOWNLOAD_FILE_PREFIX) ||
+    fileName.startsWith(WRITE_TEST_PREFIX) ||
+    fileName === 'versions.json.tmp'
+  );
+}
+
+async function cleanupTemporaryFilesInDir(dirPath) {
+  let deleted = 0;
+  let failed = 0;
+
+  let entries;
+  try {
+    entries = await fsp.readdir(dirPath, { withFileTypes: true });
+  } catch (err) {
+    console.warn('Failed to scan temp files:', dirPath, err.message || err);
+    return { deleted, failed: failed + 1 };
+  }
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !isLauncherTemporaryFile(entry.name)) continue;
+
+    const filePath = path.join(dirPath, entry.name);
+    try {
+      await fsp.unlink(filePath);
+      deleted++;
+    } catch (err) {
+      failed++;
+      console.warn('Failed to delete temp file:', filePath, err.message || err);
+    }
+  }
+
+  return { deleted, failed };
+}
+
+async function cleanupTemporaryFiles() {
+  const dirs = new Set([getLauncherDir()]);
+  try {
+    dirs.add(app.getPath('userData'));
+  } catch (err) {
+    console.warn('Failed to resolve userData for temp cleanup:', err.message || err);
+  }
+
+  let deleted = 0;
+  let failed = 0;
+  for (const dirPath of dirs) {
+    const result = await cleanupTemporaryFilesInDir(dirPath);
+    deleted += result.deleted;
+    failed += result.failed;
+  }
+
+  return { deleted, failed };
+}
+
+async function getFreeSpaceBytes(dirPath) {
+  const stats = await fsp.statfs(dirPath);
+  return Number(stats.bavail) * Number(stats.bsize);
+}
+
+function parsePositiveInt(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+async function getRemoteContentLength(url) {
+  const headers = { 'User-Agent': 'PLauncher' };
+
+  try {
+    const res = await fetch(url, { method: 'HEAD', headers });
+    const size = parsePositiveInt(res.headers.get('content-length'));
+    if (res.ok && size) return size;
+  } catch (err) {
+    console.warn('HEAD size check failed:', err.message || err);
+  }
+
+  try {
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { ...headers, Range: 'bytes=0-0' }
+    });
+    const contentRange = res.headers.get('content-range') || '';
+    const rangeMatch = contentRange.match(/\/(\d+)$/);
+    const rangeSize = rangeMatch ? parsePositiveInt(rangeMatch[1]) : null;
+    const contentLength = parsePositiveInt(res.headers.get('content-length'));
+    if (res.body && typeof res.body.cancel === 'function') {
+      await res.body.cancel();
+    }
+    if (res.ok && rangeSize) return rangeSize;
+    if (res.ok && contentLength) return contentLength;
+  } catch (err) {
+    console.warn('Range size check failed:', err.message || err);
+  }
+
+  return null;
+}
+
+async function checkFreeSpaceForDownload(targetDir, downloadUrl) {
+  let freeBytes = null;
+  let downloadBytes = null;
+
+  try {
+    freeBytes = await getFreeSpaceBytes(targetDir);
+  } catch (err) {
+    console.warn('Free space check failed:', err.message || err);
+  }
+
+  try {
+    downloadBytes = await getRemoteContentLength(downloadUrl);
+  } catch (err) {
+    console.warn('Remote file size check failed:', err.message || err);
+  }
+
+  const requiredBytes = downloadBytes
+    ? Math.ceil(downloadBytes * DOWNLOAD_SPACE_MULTIPLIER + FREE_SPACE_BUFFER_BYTES)
+    : FREE_SPACE_BUFFER_BYTES;
+
+  return {
+    ok: freeBytes === null || freeBytes >= requiredBytes,
+    freeBytes,
+    requiredBytes,
+    downloadBytes,
+    estimated: !!downloadBytes
+  };
+}
+
 function cleanupDownloadFile(filePath) {
   if (!filePath) return;
   try {
@@ -166,6 +302,29 @@ function cleanupDownloadFile(filePath) {
   } catch (err) {
     console.warn('Failed to delete download file:', err.message || err);
   }
+}
+
+function getDownloadState(item, url, state = null) {
+  let currentState = state;
+  let paused = false;
+  let canResume = false;
+  let received = 0;
+  let total = 0;
+
+  try { currentState = currentState || item.getState(); } catch {}
+  try { paused = item.isPaused(); } catch {}
+  try { canResume = item.canResume(); } catch {}
+  try { received = item.getReceivedBytes(); } catch {}
+  try { total = item.getTotalBytes(); } catch {}
+
+  return {
+    url,
+    state: currentState,
+    paused: paused || currentState === 'interrupted',
+    canResume,
+    received,
+    total
+  };
 }
 
 async function validateZipArchive(zipPath, targetDir) {
@@ -257,6 +416,15 @@ async function validateZipArchive(zipPath, targetDir) {
 
 
 app.whenReady().then(async () => {
+    try {
+      const cleanupResult = await cleanupTemporaryFiles();
+      if (cleanupResult.deleted || cleanupResult.failed) {
+        console.log('Temporary file cleanup:', cleanupResult);
+      }
+    } catch (e) {
+      console.error('Failed to cleanup temporary files:', e);
+    }
+
     let startupData = {};
     try {
       startupData = await getRemoteVersions();
@@ -265,6 +433,40 @@ app.whenReady().then(async () => {
     }
 
     ipcMain.handle('get-startup-data', () => startupData);
+    ipcMain.handle('minimize-window', (event) => {
+      const win = BrowserWindow.fromWebContents(event.sender);
+      if (win && !win.isDestroyed()) win.minimize();
+      return { ok: true };
+    });
+    ipcMain.handle('close-window', (event) => {
+      const win = BrowserWindow.fromWebContents(event.sender);
+      if (win && !win.isDestroyed()) win.close();
+      return { ok: true };
+    });
+    ipcMain.handle('open-game-folder', async (event, gameName = 'Barotrauma') => {
+      let remoteGame = null;
+      try {
+        const remote = await getRemoteVersions();
+        remoteGame = getRemoteGame(remote, gameName);
+      } catch (err) {
+        console.warn('Remote game config unavailable for open folder:', err.message || err);
+      }
+
+      const cfg = getGameConfig(gameName, remoteGame);
+      if (!cfg) return { ok: false, error: 'unknown_game' };
+
+      const gameDir = path.join(launcherDir, cfg.dirName);
+      if (!fs.existsSync(gameDir) || !fs.statSync(gameDir).isDirectory()) {
+        return { ok: false, error: 'not_found', path: gameDir };
+      }
+
+      const errorMessage = await shell.openPath(gameDir);
+      if (errorMessage) {
+        return { ok: false, error: 'open_failed', message: errorMessage, path: gameDir };
+      }
+
+      return { ok: true, path: gameDir };
+    });
     createWindow();
 
     app.on('activate', () => {
@@ -282,12 +484,16 @@ app.whenReady().then(async () => {
         let remoteGame = null;
         let remoteRaw = null;
         let remoteDownloadUrl = null;
+        let remoteSource = null;
+        let remoteSourceUrl = null;
         let remoteError = null;
         try {
           const remote = await getRemoteVersions();
           remoteGame = getRemoteGame(remote, gameName);
           remoteRaw = remoteGame?.version ?? null;
           remoteDownloadUrl = remoteGame?.downloadUrl || null;
+          remoteSource = remote?.__source || null;
+          remoteSourceUrl = remote?.__sourceUrl || null;
         } catch (err) {
           remoteError = String(err);
           console.warn('Remote version unavailable:', err.message || err);
@@ -314,6 +520,8 @@ app.whenReady().then(async () => {
           local: localRaw,
           remote: remoteRaw,
           remoteAvailable,
+          remoteSource,
+          remoteSourceUrl,
           remoteError,
           downloadUrl: remoteDownloadUrl,
           dirName: remoteGame?.dirName || null,
@@ -426,8 +634,16 @@ app.whenReady().then(async () => {
         version: pendingDownload?.version ?? null
       });
     
-      item.on('updated', () => {
-        webContents.send('download-progress', { url: controlUrl, received: item.getReceivedBytes(), total: item.getTotalBytes() });
+      item.on('updated', (event, state) => {
+        if (state === 'interrupted') {
+          try {
+            if (!item.isPaused()) item.pause();
+          } catch (err) {
+            console.warn('Failed to pause interrupted download:', err.message || err);
+          }
+        }
+
+        webContents.send('download-progress', getDownloadState(item, controlUrl, state));
       });
     
       item.once('done', async (e, state) => {
@@ -488,6 +704,10 @@ ipcMain.handle('start-download', async (event, url, gameName = null, remoteVersi
   const win = BrowserWindow.fromWebContents(event.sender);
   const launcherDir = getLauncherDir();
 
+  if (pending.size > 0 || active.size > 0) {
+    return { canceled: true, error: 'download_already_running' };
+  }
+
   let downloadUrl = url;
   let version = remoteVersion;
   if (gameName && (!downloadUrl || version === null || version === undefined || version === '')) {
@@ -505,16 +725,9 @@ ipcMain.handle('start-download', async (event, url, gameName = null, remoteVersi
     return { canceled: true, error: 'download_url_unavailable' };
   }
 
-  let filename;
-  try {
-    filename = decodeURIComponent(new URL(downloadUrl).pathname.split('/').pop()) || 'file';
-  } catch {
-    filename = 'file';
-  }
-
   let targetDir = launcherDir;
   try {
-    const tempPath = path.join(targetDir, `.pl_launcher_write_test_${Date.now()}`);
+    const tempPath = path.join(targetDir, `${WRITE_TEST_PREFIX}${Date.now()}`);
     fs.writeFileSync(tempPath, 'test');
     fs.unlinkSync(tempPath);
   } catch (err) {
@@ -523,11 +736,17 @@ ipcMain.handle('start-download', async (event, url, gameName = null, remoteVersi
     try { fs.mkdirSync(targetDir, { recursive: true }); } catch (e) {}
   }
 
+  const filename = getSafeDownloadName(gameName);
   const safeName = getAvailableName(targetDir, filename);
   const savePath = path.join(targetDir, safeName);
 
   if (gameName && (version === null || version === undefined || version === '')) {
     return { canceled: true, error: 'remote_version_unavailable' };
+  }
+
+  const spaceCheck = await checkFreeSpaceForDownload(targetDir, downloadUrl);
+  if (!spaceCheck.ok) {
+    return { canceled: true, error: 'not_enough_space', ...spaceCheck };
   }
 
   pending.set(downloadUrl, { url: downloadUrl, savePath, gameName, version });
@@ -537,17 +756,34 @@ ipcMain.handle('start-download', async (event, url, gameName = null, remoteVersi
 
   bw.webContents.downloadURL(downloadUrl);
 
-  return { canceled: false, path: savePath };
+  return { canceled: false, path: savePath, spaceCheck };
 });
 
 // pause/resume/cancel
 ipcMain.handle('download-control', (event, action, url) => {
   const item = active.get(url);
   if (!item) return { ok: false, message: 'no active download for url' };
-  if (action === 'pause') item.pause();
-  else if (action === 'resume') item.resume();
-  else if (action === 'cancel') item.cancel();
-  return { ok: true };
+  try {
+    if (action === 'pause') {
+      const state = typeof item.getState === 'function' ? item.getState() : null;
+      if (state !== 'interrupted' && !item.isPaused()) item.pause();
+      return { ok: true, ...getDownloadState(item, url, state || 'progressing'), paused: true };
+    }
+
+    if (action === 'resume') {
+      item.resume();
+      return { ok: true, ...getDownloadState(item, url, 'progressing'), paused: false };
+    }
+
+    if (action === 'cancel') {
+      item.cancel();
+      return { ok: true };
+    }
+
+    return { ok: false, message: 'unknown download action' };
+  } catch (err) {
+    return { ok: false, message: String(err) };
+  }
 });
 
 

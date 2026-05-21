@@ -16,6 +16,10 @@
   <body>
 
     <main class="main">
+      <div class="window-controls">
+        <button id="minimize-window-btn" class="window-control no-drag" type="button" aria-label="Minimize">-</button>
+        <button id="close-window-btn" class="window-control window-control--close no-drag" type="button" aria-label="Close">x</button>
+      </div>
       <aside class="sidebar">
         <h1 class="sidebar__title">PLauncher</h1>
         <div class="sidebar__divider"></div>
@@ -33,6 +37,7 @@
               <li class="spisok__element" id="version-b"></li>
               <li class="spisok__element" id="local-version"></li>
               <li class="spisok__element" id="server-version"></li>
+              <li class="spisok__element" id="server-source"></li>
             </ul>
           </div>
         </div>
@@ -40,8 +45,10 @@
           <progress id="combined-progress" value="0" max="100"></progress>
           <span id="combined-percent">0%</span>
           <span id="download-stats" class="download-stats"></span>
+          <button id="check-btn" class="no-drag">check</button>
           <button id="download-btn" class="no-drag">load</button>
           <button id="cancel-btn" class="no-drag" disabled>cancel</button>
+          <button id="open-folder-btn" class="no-drag" disabled>folder</button>
           <button id="launch-btn" class="no-drag">play</button>
         </div>
       </div>
