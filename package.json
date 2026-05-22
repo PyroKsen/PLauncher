@@ -17,8 +17,23 @@
     "build": "electron-builder --win portable"
   },
   "build": {
+    "artifactName": "plauncher.${ext}",
+    "files": [
+      "**/*",
+      "!dist/**",
+      "!Plauncher/**",
+      "!*.zip",
+      "!.git/**",
+      "!.vscode/**",
+      "!Barotrauma/**",
+      "!LethalCompany/**",
+      "!Slay The Spire 2/**",
+      "!.plauncher-download-*",
+      "!versions.json.tmp"
+    ],
     "win": {
       "target": "portable",
+      "icon": "assets/images/иконка-лаунчер.ico",
       "signAndEditExecutable": false
     }
   },

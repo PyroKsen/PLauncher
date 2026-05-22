@@ -2,6 +2,9 @@ const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('api', {
   getStartupData: () => ipcRenderer.invoke('get-startup-data'),
+  getLauncherWriteAccess: () => ipcRenderer.invoke('get-launcher-write-access'),
+  getGamesDir: () => ipcRenderer.invoke('get-games-dir'),
+  chooseGamesDir: () => ipcRenderer.invoke('choose-games-dir'),
   minimizeWindow: () => ipcRenderer.invoke('minimize-window'),
   closeWindow: () => ipcRenderer.invoke('close-window'),
   openGameFolder: (gameName) => ipcRenderer.invoke('open-game-folder', gameName),

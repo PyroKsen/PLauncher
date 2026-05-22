@@ -133,21 +133,21 @@ h1 {
     -webkit-app-region: no-drag;
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 0 16px;
+    gap: 6px;
+    padding: 0 10px;
     width: 100%;
     height: 10%;
 }
 
 #combined-progress {
-    width: 240px;
-    flex: 0 0 240px;
+    width: 160px;
+    flex: 0 0 160px;
 }
 
 .download-stats {
     -webkit-app-region: no-drag;
-    flex: 1 1 150px;
-    min-width: 120px;
+    flex: 1 1 110px;
+    min-width: 90px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -160,12 +160,23 @@ h1 {
     color: white;
 }
 
+.spisok__element--path {
+    max-width: 360px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .no-drag {
     -webkit-app-region: no-drag;
 }
 
 button {
-    flex: 0 0 70px;
-    width: 70px;
+    flex: 0 0 auto;
+    min-width: 64px;
+    width: auto;
     height: 30px;
+    padding: 0 8px;
+    white-space: nowrap;
+    font-size: 12px;
 }

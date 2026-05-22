@@ -17,8 +17,8 @@
 
     <main class="main">
       <div class="window-controls">
-        <button id="minimize-window-btn" class="window-control no-drag" type="button" aria-label="Minimize">-</button>
-        <button id="close-window-btn" class="window-control window-control--close no-drag" type="button" aria-label="Close">x</button>
+        <button id="minimize-window-btn" class="window-control no-drag" type="button" aria-label="Свернуть">-</button>
+        <button id="close-window-btn" class="window-control window-control--close no-drag" type="button" aria-label="Закрыть">x</button>
       </div>
       <aside class="sidebar">
         <h1 class="sidebar__title">PLauncher</h1>
@@ -38,6 +38,7 @@
               <li class="spisok__element" id="local-version"></li>
               <li class="spisok__element" id="server-version"></li>
               <li class="spisok__element" id="server-source"></li>
+              <li class="spisok__element spisok__element--path" id="games-folder"></li>
             </ul>
           </div>
         </div>
@@ -45,11 +46,12 @@
           <progress id="combined-progress" value="0" max="100"></progress>
           <span id="combined-percent">0%</span>
           <span id="download-stats" class="download-stats"></span>
-          <button id="check-btn" class="no-drag">check</button>
-          <button id="download-btn" class="no-drag">load</button>
-          <button id="cancel-btn" class="no-drag" disabled>cancel</button>
-          <button id="open-folder-btn" class="no-drag" disabled>folder</button>
-          <button id="launch-btn" class="no-drag">play</button>
+          <button id="check-btn" class="no-drag">Проверить версию игры</button>
+          <button id="download-btn" class="no-drag">Скачать</button>
+          <button id="cancel-btn" class="no-drag" disabled>Отмена</button>
+          <button id="games-dir-btn" class="no-drag">Папка установки игр</button>
+          <button id="open-folder-btn" class="no-drag" disabled>Открыть папку игры</button>
+          <button id="launch-btn" class="no-drag">Играть</button>
         </div>
       </div>
     </main>

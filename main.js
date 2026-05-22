@@ -1,5 +1,5 @@
 const { app, BrowserWindow, ipcMain, session } = require('electron/main')
-const { shell } = require('electron')
+const { shell, dialog } = require('electron')
 const path = require('node:path')
 const { pathToFileURL } = require('url');
 const fs = require('fs');
@@ -19,11 +19,14 @@ const FREE_SPACE_BUFFER_BYTES = 512 * 1024 * 1024;
 const DOWNLOAD_SPACE_MULTIPLIER = 2;
 const DOWNLOAD_FILE_PREFIX = '.plauncher-download-';
 const WRITE_TEST_PREFIX = '.pl_launcher_write_test_';
+const WINDOW_ICON = path.join(__dirname, 'assets', 'images', 'иконка лаунчер.png');
+const SETTINGS_FILE_NAME = 'settings.json';
 
 const createWindow = () => {
   const win = new BrowserWindow({
     width: 1280,
     height: 720,
+    icon: WINDOW_ICON,
     frame: false,
     transparent: true,
     resizable: false,
@@ -59,6 +62,14 @@ function getAvailableName(dir, name) {
 }
 
 function getLauncherDir() {
+  if (process.env.PORTABLE_EXECUTABLE_DIR) {
+    return process.env.PORTABLE_EXECUTABLE_DIR;
+  }
+
+  if (process.env.PORTABLE_EXECUTABLE_FILE) {
+    return path.dirname(process.env.PORTABLE_EXECUTABLE_FILE);
+  }
+
   if (app.isPackaged) {
     return path.dirname(process.execPath);
   }
@@ -67,7 +78,73 @@ function getLauncherDir() {
 
 const launcherDir = getLauncherDir();
 
-const versionsPath = path.join(getLauncherDir(), 'versions.json');
+const legacyVersionsPath = path.join(getLauncherDir(), 'versions.json');
+
+function getSettingsPath() {
+  return path.join(app.getPath('userData'), SETTINGS_FILE_NAME);
+}
+
+function getLocalVersionsPath() {
+  return path.join(app.getPath('userData'), 'versions.json');
+}
+
+function readSettings() {
+  try {
+    const content = fs.readFileSync(getSettingsPath(), 'utf8');
+    return JSON.parse(content.replace(/^\uFEFF/, ''));
+  } catch {
+    return {};
+  }
+}
+
+async function saveSettings(settings) {
+  const settingsPath = getSettingsPath();
+  const tmpPath = settingsPath + '.tmp';
+  await fsExtra.ensureDir(path.dirname(settingsPath));
+  await fsp.writeFile(tmpPath, JSON.stringify(settings, null, 2), 'utf8');
+  await fsp.rename(tmpPath, settingsPath);
+}
+
+function getGamesDir() {
+  const settings = readSettings();
+  const configured = typeof settings.gamesDir === 'string' ? settings.gamesDir.trim() : '';
+  return configured ? path.resolve(configured) : launcherDir;
+}
+
+async function setGamesDir(dirPath) {
+  const resolved = path.resolve(dirPath);
+  const settings = readSettings();
+  settings.gamesDir = resolved;
+  await saveSettings(settings);
+  return resolved;
+}
+
+async function checkDirectoryWriteAccess(dirPath) {
+  const tempPath = path.join(dirPath, `${WRITE_TEST_PREFIX}${process.pid}_${Date.now()}`);
+  try {
+    await fsExtra.ensureDir(dirPath);
+    await fsp.writeFile(tempPath, 'test');
+    await fsp.unlink(tempPath);
+    return { ok: true, path: dirPath, error: null };
+  } catch (err) {
+    try {
+      if (fs.existsSync(tempPath)) await fsp.unlink(tempPath);
+    } catch {}
+    return {
+      ok: false,
+      path: dirPath,
+      error: err && err.message ? err.message : String(err)
+    };
+  }
+}
+
+async function checkLauncherWriteAccess() {
+  return checkDirectoryWriteAccess(launcherDir);
+}
+
+async function checkGamesWriteAccess() {
+  return checkDirectoryWriteAccess(getGamesDir());
+}
 
 async function getRemoteVersions() {
   const mod = await import(pathToFileURL(path.join(__dirname, 'startup.mjs')).href);
@@ -128,7 +205,7 @@ function isGamePresent(gameName, remoteGame = null) {
   if (!cfg) {
     return { gameDir: '', exePath: '', dirExists: false, exeExists: false };
   }
-  const gameDir = path.join(launcherDir, cfg.dirName);
+  const gameDir = path.join(getGamesDir(), cfg.dirName);
   const exePath = path.join(gameDir, cfg.exeName);
   const dirExists = fs.existsSync(gameDir) && fs.statSync(gameDir).isDirectory();
   const exeExists = fs.existsSync(exePath) && fs.statSync(exePath).isFile();
@@ -136,11 +213,15 @@ function isGamePresent(gameName, remoteGame = null) {
 }
 
 function readLocalVersions() {
+  const paths = [getLocalVersionsPath(), legacyVersionsPath];
   try {
-    const content = fs.readFileSync(versionsPath, 'utf8');
-    const clean = content.replace(/^\uFEFF/, '');
-    const parsed = JSON.parse(clean);
-    return parsed;
+    for (const filePath of paths) {
+      if (!fs.existsSync(filePath)) continue;
+      const content = fs.readFileSync(filePath, 'utf8');
+      const clean = content.replace(/^\uFEFF/, '');
+      return JSON.parse(clean);
+    }
+    return {};
   } catch (err) {
     console.error('readLocalVersions error:', err.message);
     return {};
@@ -150,8 +231,10 @@ function readLocalVersions() {
 async function saveLocalVersions(obj) {
   try {
     if (!obj || typeof obj !== 'object') throw new Error('Invalid versions object');
+    const versionsPath = getLocalVersionsPath();
     const tmpPath = versionsPath + '.tmp';
     const data = JSON.stringify(obj, null, 2);
+    await fsExtra.ensureDir(path.dirname(versionsPath));
     await fsp.writeFile(tmpPath, data, 'utf8');
     await fsp.rename(tmpPath, versionsPath);
     return { ok: true };
@@ -204,7 +287,7 @@ async function cleanupTemporaryFilesInDir(dirPath) {
 }
 
 async function cleanupTemporaryFiles() {
-  const dirs = new Set([getLauncherDir()]);
+  const dirs = new Set([getLauncherDir(), getGamesDir()]);
   try {
     dirs.add(app.getPath('userData'));
   } catch (err) {
@@ -433,6 +516,40 @@ app.whenReady().then(async () => {
     }
 
     ipcMain.handle('get-startup-data', () => startupData);
+    ipcMain.handle('get-launcher-write-access', async () => checkLauncherWriteAccess());
+    ipcMain.handle('get-games-dir', async () => {
+      const gamesDir = getGamesDir();
+      return {
+        ok: true,
+        path: gamesDir,
+        writeAccess: await checkGamesWriteAccess()
+      };
+    });
+    ipcMain.handle('choose-games-dir', async (event) => {
+      const win = BrowserWindow.fromWebContents(event.sender);
+      const currentDir = getGamesDir();
+      const dialogOptions = {
+        title: 'Выберите папку для игр',
+        defaultPath: currentDir,
+        properties: ['openDirectory', 'createDirectory']
+      };
+      const result = win
+        ? await dialog.showOpenDialog(win, dialogOptions)
+        : await dialog.showOpenDialog(dialogOptions);
+
+      if (result.canceled || !result.filePaths || !result.filePaths[0]) {
+        return { ok: false, canceled: true, path: currentDir };
+      }
+
+      const selectedDir = path.resolve(result.filePaths[0]);
+      const writeAccess = await checkDirectoryWriteAccess(selectedDir);
+      if (!writeAccess.ok) {
+        return { ok: false, error: 'games_dir_not_writable', path: selectedDir, writeAccess };
+      }
+
+      const savedDir = await setGamesDir(selectedDir);
+      return { ok: true, path: savedDir, writeAccess };
+    });
     ipcMain.handle('minimize-window', (event) => {
       const win = BrowserWindow.fromWebContents(event.sender);
       if (win && !win.isDestroyed()) win.minimize();
@@ -455,7 +572,7 @@ app.whenReady().then(async () => {
       const cfg = getGameConfig(gameName, remoteGame);
       if (!cfg) return { ok: false, error: 'unknown_game' };
 
-      const gameDir = path.join(launcherDir, cfg.dirName);
+      const gameDir = path.join(getGamesDir(), cfg.dirName);
       if (!fs.existsSync(gameDir) || !fs.statSync(gameDir).isDirectory()) {
         return { ok: false, error: 'not_found', path: gameDir };
       }
@@ -608,7 +725,7 @@ app.whenReady().then(async () => {
       const pendingKey = [itemUrl, ...urlChain].find(downloadUrl => pending.has(downloadUrl));
       const pendingDownload = pendingKey ? pending.get(pendingKey) : null;
       const controlUrl = pendingDownload?.url || pendingKey || itemUrl;
-      let savePath = pendingDownload?.savePath || path.join(getLauncherDir(), item.getFilename());
+      let savePath = pendingDownload?.savePath || path.join(getGamesDir(), item.getFilename());
       if (pendingKey) pending.delete(pendingKey);
       else pending.delete(itemUrl);
     
@@ -631,7 +748,8 @@ app.whenReady().then(async () => {
       activeMetadata.set(controlUrl, {
         savePath: finalSavePath,
         gameName: pendingDownload?.gameName || null,
-        version: pendingDownload?.version ?? null
+        version: pendingDownload?.version ?? null,
+        targetDir: pendingDownload?.targetDir || getGamesDir()
       });
     
       item.on('updated', (event, state) => {
@@ -663,7 +781,7 @@ app.whenReady().then(async () => {
     
           const ext = path.extname(finalSavePath).toLowerCase();
           if (ext === '.zip') {
-            const targetDir = getLauncherDir();
+            const targetDir = metadata?.targetDir || getGamesDir();
 
             const res = await extractSingleRootFolderWithProgress(finalSavePath, targetDir, webContents, controlUrl);
 
@@ -702,7 +820,7 @@ app.whenReady().then(async () => {
 
 ipcMain.handle('start-download', async (event, url, gameName = null, remoteVersion = null) => {
   const win = BrowserWindow.fromWebContents(event.sender);
-  const launcherDir = getLauncherDir();
+  const gamesDir = getGamesDir();
 
   if (pending.size > 0 || active.size > 0) {
     return { canceled: true, error: 'download_already_running' };
@@ -725,17 +843,12 @@ ipcMain.handle('start-download', async (event, url, gameName = null, remoteVersi
     return { canceled: true, error: 'download_url_unavailable' };
   }
 
-  let targetDir = launcherDir;
-  try {
-    const tempPath = path.join(targetDir, `${WRITE_TEST_PREFIX}${Date.now()}`);
-    fs.writeFileSync(tempPath, 'test');
-    fs.unlinkSync(tempPath);
-  } catch (err) {
-    console.warn('No write permission in launcher dir, falling back to userData:', err.message);
-    targetDir = app.getPath('userData');
-    try { fs.mkdirSync(targetDir, { recursive: true }); } catch (e) {}
+  const writeAccess = await checkGamesWriteAccess();
+  if (!writeAccess.ok) {
+    return { canceled: true, error: 'games_dir_not_writable', writeAccess };
   }
 
+  const targetDir = gamesDir;
   const filename = getSafeDownloadName(gameName);
   const safeName = getAvailableName(targetDir, filename);
   const savePath = path.join(targetDir, safeName);
@@ -749,7 +862,7 @@ ipcMain.handle('start-download', async (event, url, gameName = null, remoteVersi
     return { canceled: true, error: 'not_enough_space', ...spaceCheck };
   }
 
-  pending.set(downloadUrl, { url: downloadUrl, savePath, gameName, version });
+  pending.set(downloadUrl, { url: downloadUrl, savePath, gameName, version, targetDir });
 
   const bw = BrowserWindow.fromWebContents(event.sender);
   if (!bw) throw new Error('No browser window available for download');
@@ -819,7 +932,7 @@ ipcMain.handle('launch-game', async (event, gameName = 'Barotrauma') => {
     return { ok: false, error: 'unknown_game' };
   }
 
-  const exePath = path.join(launcherDir, cfg.dirName, cfg.exeName);
+  const exePath = path.join(getGamesDir(), cfg.dirName, cfg.exeName);
 
   if (!fs.existsSync(exePath)) {
     return { ok: false, error: 'not_found', message: `File not found: ${exePath}` };
