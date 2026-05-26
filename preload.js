@@ -2,6 +2,11 @@ const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('api', {
   getStartupData: () => ipcRenderer.invoke('get-startup-data'),
+  getLauncherUpdateState: () => ipcRenderer.invoke('get-launcher-update-state'),
+  checkLauncherUpdate: () => ipcRenderer.invoke('check-launcher-update'),
+  downloadLauncherUpdate: () => ipcRenderer.invoke('download-launcher-update'),
+  installLauncherUpdate: () => ipcRenderer.invoke('install-launcher-update'),
+  onLauncherUpdateState: (cb) => ipcRenderer.on('launcher-update-state', (e, d) => cb(d)),
   getLauncherWriteAccess: () => ipcRenderer.invoke('get-launcher-write-access'),
   getGamesDir: () => ipcRenderer.invoke('get-games-dir'),
   chooseGamesDir: () => ipcRenderer.invoke('choose-games-dir'),

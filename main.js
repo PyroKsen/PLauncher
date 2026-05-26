@@ -7,6 +7,7 @@ const unzipper = require('unzipper');
 const fsExtra = require('fs-extra');
 const fsp = fs.promises;
 const { spawn } = require('child_process');
+const { autoUpdater } = require('electron-updater');
 
 
 let gameLaunchInProgress = false;
@@ -21,6 +22,7 @@ const DOWNLOAD_FILE_PREFIX = '.plauncher-download-';
 const WRITE_TEST_PREFIX = '.pl_launcher_write_test_';
 const WINDOW_ICON = path.join(__dirname, 'assets', 'images', 'иконка лаунчер.png');
 const SETTINGS_FILE_NAME = 'settings.json';
+const LAUNCHER_UPDATE_CHECK_DELAY_MS = 3000;
 
 const createWindow = () => {
   const win = new BrowserWindow({
@@ -145,6 +147,166 @@ async function checkLauncherWriteAccess() {
 async function checkGamesWriteAccess() {
   return checkDirectoryWriteAccess(getGamesDir());
 }
+
+autoUpdater.autoDownload = false;
+autoUpdater.autoInstallOnAppQuit = false;
+
+const launcherUpdateState = {
+  status: app.isPackaged ? 'idle' : 'dev',
+  currentVersion: app.getVersion(),
+  availableVersion: null,
+  downloaded: false,
+  progress: null,
+  error: null,
+  isPackaged: app.isPackaged
+};
+
+let launcherUpdateCheckPromise = null;
+let launcherUpdateDownloadPromise = null;
+
+function getLauncherUpdateState() {
+  return {
+    ...launcherUpdateState,
+    currentVersion: app.getVersion(),
+    isPackaged: app.isPackaged
+  };
+}
+
+function sendLauncherUpdateState() {
+  const state = getLauncherUpdateState();
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send('launcher-update-state', state);
+    }
+  }
+  return state;
+}
+
+function setLauncherUpdateState(patch) {
+  Object.assign(launcherUpdateState, patch);
+  return sendLauncherUpdateState();
+}
+
+function getUpdateErrorMessage(err) {
+  if (!err) return null;
+  return err.message || String(err);
+}
+
+function setupLauncherUpdater() {
+  autoUpdater.on('checking-for-update', () => {
+    setLauncherUpdateState({ status: 'checking', error: null, progress: null });
+  });
+
+  autoUpdater.on('update-available', info => {
+    setLauncherUpdateState({
+      status: 'available',
+      availableVersion: info?.version || null,
+      downloaded: false,
+      progress: null,
+      error: null
+    });
+  });
+
+  autoUpdater.on('update-not-available', () => {
+    setLauncherUpdateState({
+      status: 'none',
+      availableVersion: null,
+      downloaded: false,
+      progress: null,
+      error: null
+    });
+  });
+
+  autoUpdater.on('download-progress', progress => {
+    setLauncherUpdateState({
+      status: 'downloading',
+      progress: {
+        percent: Number(progress?.percent) || 0,
+        transferred: Number(progress?.transferred) || 0,
+        total: Number(progress?.total) || 0,
+        bytesPerSecond: Number(progress?.bytesPerSecond) || 0
+      },
+      error: null
+    });
+  });
+
+  autoUpdater.on('update-downloaded', info => {
+    setLauncherUpdateState({
+      status: 'downloaded',
+      availableVersion: info?.version || launcherUpdateState.availableVersion,
+      downloaded: true,
+      progress: { percent: 100 },
+      error: null
+    });
+  });
+
+  autoUpdater.on('error', err => {
+    setLauncherUpdateState({
+      status: 'error',
+      error: getUpdateErrorMessage(err)
+    });
+  });
+}
+
+async function checkLauncherUpdate() {
+  if (!app.isPackaged) {
+    return setLauncherUpdateState({ status: 'dev', error: null });
+  }
+
+  if (launcherUpdateCheckPromise) return launcherUpdateCheckPromise;
+
+  launcherUpdateCheckPromise = autoUpdater.checkForUpdates()
+    .then(() => getLauncherUpdateState())
+    .catch(err => setLauncherUpdateState({ status: 'error', error: getUpdateErrorMessage(err) }))
+    .finally(() => {
+      launcherUpdateCheckPromise = null;
+    });
+
+  return launcherUpdateCheckPromise;
+}
+
+async function downloadLauncherUpdate() {
+  if (!app.isPackaged) {
+    return setLauncherUpdateState({ status: 'dev', error: null });
+  }
+
+  if (launcherUpdateState.status === 'downloaded') {
+    return getLauncherUpdateState();
+  }
+
+  if (launcherUpdateDownloadPromise) return launcherUpdateDownloadPromise;
+
+  setLauncherUpdateState({ status: 'downloading', progress: { percent: 0 }, error: null });
+  launcherUpdateDownloadPromise = autoUpdater.downloadUpdate()
+    .then(() => getLauncherUpdateState())
+    .catch(err => setLauncherUpdateState({ status: 'error', error: getUpdateErrorMessage(err) }))
+    .finally(() => {
+      launcherUpdateDownloadPromise = null;
+    });
+
+  return launcherUpdateDownloadPromise;
+}
+
+function installLauncherUpdate() {
+  if (!app.isPackaged) {
+    return setLauncherUpdateState({ status: 'dev', error: null });
+  }
+
+  if (launcherUpdateState.status !== 'downloaded') {
+    return setLauncherUpdateState({
+      status: launcherUpdateState.status || 'idle',
+      error: 'update_not_downloaded'
+    });
+  }
+
+  setLauncherUpdateState({ status: 'installing', error: null });
+  setImmediate(() => {
+    autoUpdater.quitAndInstall(false, true);
+  });
+  return getLauncherUpdateState();
+}
+
+setupLauncherUpdater();
 
 async function getRemoteVersions() {
   const mod = await import(pathToFileURL(path.join(__dirname, 'startup.mjs')).href);
@@ -516,6 +678,10 @@ app.whenReady().then(async () => {
     }
 
     ipcMain.handle('get-startup-data', () => startupData);
+    ipcMain.handle('get-launcher-update-state', () => getLauncherUpdateState());
+    ipcMain.handle('check-launcher-update', () => checkLauncherUpdate());
+    ipcMain.handle('download-launcher-update', () => downloadLauncherUpdate());
+    ipcMain.handle('install-launcher-update', () => installLauncherUpdate());
     ipcMain.handle('get-launcher-write-access', async () => checkLauncherWriteAccess());
     ipcMain.handle('get-games-dir', async () => {
       const gamesDir = getGamesDir();
@@ -585,6 +751,14 @@ app.whenReady().then(async () => {
       return { ok: true, path: gameDir };
     });
     createWindow();
+    sendLauncherUpdateState();
+    if (app.isPackaged) {
+      setTimeout(() => {
+        checkLauncherUpdate().catch(err => {
+          console.error('Launcher update check failed:', err);
+        });
+      }, LAUNCHER_UPDATE_CHECK_DELAY_MS);
+    }
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {

@@ -101,6 +101,30 @@ h1 {
     color: white;
 }
 
+.launcher-update {
+    -webkit-app-region: no-drag;
+    margin-top: 28px;
+    padding-top: 18px;
+    border-top: 1px solid rgba(220, 220, 220, .35);
+    color: white;
+    font-family: Arial, sans-serif;
+}
+
+.launcher-update__version,
+.launcher-update__status {
+    -webkit-app-region: no-drag;
+    margin-bottom: 8px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+}
+
+.launcher-update__button {
+    width: 100%;
+    min-width: 100%;
+}
+
 .base {
     -webkit-app-region: no-drag;
     display: table-column;

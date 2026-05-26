@@ -11,6 +11,9 @@ const status = document.getElementById("version-b");
 const localVersion = document.getElementById("local-version");
 const serverVersion = document.getElementById("server-version");
 const serverSource = document.getElementById("server-source");
+const launcherVersion = document.getElementById("launcher-version");
+const launcherUpdateStatus = document.getElementById("launcher-update-status");
+const launcherUpdateBtn = document.getElementById("launcher-update-btn");
 const minimizeWindowBtn = document.getElementById("minimize-window-btn");
 const closeWindowBtn = document.getElementById("close-window-btn");
 const checkBtn = document.getElementById("check-btn");
@@ -63,6 +66,8 @@ let gameRunning = false;
 let actionLock = false;
 let versionCheckInProgress = false;
 let launcherWriteAccess = { ok: true };
+let launcherUpdateState = { status: "idle", currentVersion: null };
+let launcherUpdateActionLock = false;
 let gamesDirPath = "";
 
 let downloadPercent = 0;
@@ -132,6 +137,53 @@ function setGamesFolderText(folderPath) {
   if (!gamesFolder) return;
   gamesFolder.textContent = "папка игр: " + (gamesDirPath || "-");
   gamesFolder.title = gamesDirPath || "";
+}
+
+function getLauncherUpdateStatusText(state) {
+  const status = state && state.status ? state.status : "idle";
+  const availableVersion = state && state.availableVersion ? state.availableVersion : null;
+  const progress = state && state.progress ? state.progress : null;
+
+  if (status === "dev") return "обновления доступны только в сборке";
+  if (status === "checking") return "проверка обновления...";
+  if (status === "available") return "доступна версия: " + availableVersion;
+  if (status === "downloading") {
+    const percent = progress && typeof progress.percent === "number" ? Math.round(progress.percent) : 0;
+    return "загрузка обновления: " + percent + "%";
+  }
+  if (status === "downloaded") return "обновление готово к установке";
+  if (status === "installing") return "установка обновления...";
+  if (status === "none") return "обновлений нет";
+  if (status === "error") return "ошибка проверки обновления";
+  return "обновление не проверено";
+}
+
+function getLauncherUpdateButtonText(state) {
+  const status = state && state.status ? state.status : "idle";
+  if (status === "available") return "Обновить лаунчер";
+  if (status === "downloaded") return "Перезапустить";
+  if (status === "checking") return "Проверка...";
+  if (status === "downloading") return "Загрузка...";
+  if (status === "installing") return "Установка...";
+  if (status === "dev") return "Dev режим";
+  return "Проверить лаунчер";
+}
+
+function renderLauncherUpdateState(state) {
+  launcherUpdateState = state || launcherUpdateState;
+  if (launcherVersion) {
+    launcherVersion.textContent = "версия лаунчера: " + formatVersion(launcherUpdateState.currentVersion);
+  }
+  if (launcherUpdateStatus) {
+    launcherUpdateStatus.textContent = getLauncherUpdateStatusText(launcherUpdateState);
+    launcherUpdateStatus.title = launcherUpdateState.error || "";
+  }
+  if (launcherUpdateBtn) {
+    const status = launcherUpdateState.status || "idle";
+    const busy = status === "checking" || status === "downloading" || status === "installing";
+    launcherUpdateBtn.textContent = getLauncherUpdateButtonText(launcherUpdateState);
+    launcherUpdateBtn.disabled = busy || status === "dev" || launcherUpdateActionLock || downloadInProgress || gameRunning;
+  }
 }
 
 function renderCurrentGameStatus() {
@@ -288,6 +340,7 @@ function updatePlayButton() {
   updateCancelButton();
   updateCheckButton();
   updateFolderButton();
+  renderLauncherUpdateState(launcherUpdateState);
   if (gamesDirBtn) {
     gamesDirBtn.disabled = downloadInProgress || gameRunning || versionCheckInProgress;
   }
@@ -375,6 +428,42 @@ closeWindowBtn.addEventListener("click", () => {
 
 checkBtn.addEventListener("click", () => {
   refreshAllGames();
+});
+
+launcherUpdateBtn.addEventListener("click", async () => {
+  if (launcherUpdateActionLock || downloadInProgress || gameRunning) return;
+
+  launcherUpdateActionLock = true;
+  renderLauncherUpdateState(launcherUpdateState);
+  try {
+    const statusName = launcherUpdateState.status || "idle";
+    if (statusName === "available") {
+      const downloadedState = await window.api.downloadLauncherUpdate();
+      renderLauncherUpdateState(downloadedState);
+      if (downloadedState && (downloadedState.status === "downloaded" || downloadedState.downloaded)) {
+        await window.api.installLauncherUpdate();
+      }
+      return;
+    }
+
+    if (statusName === "downloaded") {
+      await window.api.installLauncherUpdate();
+      return;
+    }
+
+    const checkedState = await window.api.checkLauncherUpdate();
+    renderLauncherUpdateState(checkedState);
+  } catch (err) {
+    console.error("launcher update action failed:", err);
+    renderLauncherUpdateState({
+      ...launcherUpdateState,
+      status: "error",
+      error: err && err.message ? err.message : String(err)
+    });
+  } finally {
+    launcherUpdateActionLock = false;
+    renderLauncherUpdateState(launcherUpdateState);
+  }
 });
 
 gamesDirBtn.addEventListener("click", async () => {
@@ -589,6 +678,10 @@ launchBtn.addEventListener("click", async () => {
   }
 });
 
+window.api.onLauncherUpdateState(state => {
+  renderLauncherUpdateState(state);
+});
+
 window.api.onDownloadProgress(info => {
   currentPhase = "download";
   latestDownloadInfo = info;
@@ -754,7 +847,17 @@ async function refreshAllGames() {
   }
 }
 
+async function refreshLauncherUpdateState() {
+  try {
+    const state = await window.api.getLauncherUpdateState();
+    renderLauncherUpdateState(state);
+  } catch (err) {
+    console.error("getLauncherUpdateState error:", err);
+  }
+}
+
 setCurrentGame(currentGame, { refresh: false });
+refreshLauncherUpdateState();
 refreshGamesDirState().finally(() => {
   refreshAllGames();
 });

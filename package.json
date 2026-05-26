@@ -1,11 +1,12 @@
 {
   "dependencies": {
+    "electron-updater": "^6.8.3",
     "fs-extra": "^11.3.1",
     "unzipper": "^0.12.3"
   },
   "name": "plauncher",
   "version": "1.0.0",
-  "description": "",
+  "description": "Game launcher for PLauncher",
   "main": "main.js",
   "devDependencies": {
     "electron": "^38.1.0",
@@ -14,10 +15,14 @@
   "scripts": {
     "start": "electron .",
     "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "electron-builder --win portable"
+    "build": "electron-builder --win --publish never",
+    "release": "electron-builder --win --publish always",
+    "build:portable": "electron-builder --win portable --publish never"
   },
   "build": {
-    "artifactName": "plauncher.${ext}",
+    "appId": "com.pyroksen.plauncher",
+    "productName": "PLauncher",
+    "artifactName": "${productName}-Setup-${version}.${ext}",
     "files": [
       "**/*",
       "!dist/**",
@@ -31,10 +36,32 @@
       "!.plauncher-download-*",
       "!versions.json.tmp"
     ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "PyroKsen",
+        "repo": "PLauncher",
+        "releaseType": "draft"
+      }
+    ],
     "win": {
-      "target": "portable",
+      "target": "nsis",
       "icon": "assets/images/иконка-лаунчер.ico",
+      "verifyUpdateCodeSignature": false,
       "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "PLauncher",
+      "uninstallDisplayName": "PLauncher",
+      "installerIcon": "assets/images/иконка-лаунчер.ico",
+      "uninstallerIcon": "assets/images/иконка-лаунчер.ico",
+      "installerHeaderIcon": "assets/images/иконка-лаунчер.ico"
     }
   },
   "repository": {
