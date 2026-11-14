@@ -23,6 +23,19 @@ const WRITE_TEST_PREFIX = '.pl_launcher_write_test_';
 const WINDOW_ICON = path.join(__dirname, 'assets', 'images', 'иконка лаунчер.png');
 const SETTINGS_FILE_NAME = 'settings.json';
 const LAUNCHER_UPDATE_CHECK_DELAY_MS = 3000;
+const LOGS_DIR_NAME = 'logs';
+const LOG_FILE_NAME = 'launcher.log';
+const OLD_LOG_FILE_NAME = 'launcher.old.log';
+const MAX_LOG_FILE_BYTES = 1024 * 1024;
+const REQUIRED_REMOTE_GAME_FIELDS = ['version', 'downloadUrl', 'dirName', 'exeName'];
+
+const originalConsole = {
+  log: console.log.bind(console),
+  warn: console.warn.bind(console),
+  error: console.error.bind(console)
+};
+let fileLoggingReady = false;
+let fileLoggingFailed = false;
 
 const createWindow = () => {
   const win = new BrowserWindow({
@@ -90,6 +103,89 @@ function getLocalVersionsPath() {
   return path.join(app.getPath('userData'), 'versions.json');
 }
 
+function getLogsDir() {
+  return path.join(app.getPath('userData'), LOGS_DIR_NAME);
+}
+
+function getLogPath() {
+  return path.join(getLogsDir(), LOG_FILE_NAME);
+}
+
+function serializeLogArg(arg) {
+  if (arg instanceof Error) {
+    return arg.stack || `${arg.name}: ${arg.message}`;
+  }
+  if (typeof arg === 'string') {
+    return arg;
+  }
+  if (arg === null || arg === undefined) {
+    return String(arg);
+  }
+  if (typeof arg === 'object') {
+    try {
+      return JSON.stringify(arg);
+    } catch {
+      return String(arg);
+    }
+  }
+  return String(arg);
+}
+
+function rotateLogFileIfNeeded(logPath) {
+  if (!fs.existsSync(logPath)) return;
+  const stat = fs.statSync(logPath);
+  if (stat.size <= MAX_LOG_FILE_BYTES) return;
+
+  const oldLogPath = path.join(path.dirname(logPath), OLD_LOG_FILE_NAME);
+  if (fs.existsSync(oldLogPath)) {
+    fs.unlinkSync(oldLogPath);
+  }
+  fs.renameSync(logPath, oldLogPath);
+}
+
+function writeLogLine(level, args) {
+  if (!fileLoggingReady) return;
+
+  try {
+    const logsDir = getLogsDir();
+    const logPath = getLogPath();
+    fs.mkdirSync(logsDir, { recursive: true });
+    rotateLogFileIfNeeded(logPath);
+
+    const message = args.map(serializeLogArg).join(' ');
+    const line = `[${new Date().toISOString()}] [${String(level).toUpperCase()}] ${message}\n`;
+    fs.appendFileSync(logPath, line, 'utf8');
+  } catch (err) {
+    if (!fileLoggingFailed) {
+      fileLoggingFailed = true;
+      originalConsole.warn('File logging failed:', err && err.message ? err.message : err);
+    }
+  }
+}
+
+function setupFileLogging() {
+  if (fileLoggingReady) return;
+  fileLoggingReady = true;
+
+  for (const level of ['log', 'warn', 'error']) {
+    console[level] = (...args) => {
+      originalConsole[level](...args);
+      writeLogLine(level, args);
+    };
+  }
+
+  writeLogLine('info', [
+    'Launcher started',
+    {
+      version: app.getVersion(),
+      isPackaged: app.isPackaged,
+      launcherDir,
+      gamesDir: getGamesDir(),
+      userData: app.getPath('userData')
+    }
+  ]);
+}
+
 function readSettings() {
   try {
     const content = fs.readFileSync(getSettingsPath(), 'utf8');
@@ -107,10 +203,18 @@ async function saveSettings(settings) {
   await fsp.rename(tmpPath, settingsPath);
 }
 
-function getGamesDir() {
+function getConfiguredGamesDir() {
   const settings = readSettings();
   const configured = typeof settings.gamesDir === 'string' ? settings.gamesDir.trim() : '';
-  return configured ? path.resolve(configured) : launcherDir;
+  return configured ? path.resolve(configured) : null;
+}
+
+function isGamesDirConfigured() {
+  return !!getConfiguredGamesDir();
+}
+
+function getGamesDir() {
+  return getConfiguredGamesDir() || launcherDir;
 }
 
 async function setGamesDir(dirPath) {
@@ -327,6 +431,10 @@ const GAME_CONFIG = {
   SlayTheSpire2: {
     dirName: 'Slay The Spire 2',
     exeName: 'SlayTheSpire2.exe'
+  },
+  CasualtiesUnknown: {
+    dirName: 'Casualties Unknown',
+    exeName: 'CasualtiesUnknown.exe'
   }
 };
 
@@ -346,6 +454,50 @@ function getGameConfig(gameName, remoteGame = null) {
   };
   if (!cfg.dirName || !cfg.exeName) return null;
   return cfg;
+}
+
+function validateRemoteGameConfig(remoteGame) {
+  if (!remoteGame || typeof remoteGame !== 'object') {
+    return { ok: false, missing: REQUIRED_REMOTE_GAME_FIELDS.slice() };
+  }
+
+  const missing = REQUIRED_REMOTE_GAME_FIELDS.filter(field => {
+    const value = remoteGame[field];
+    return value === null || value === undefined || String(value).trim() === '';
+  });
+
+  return {
+    ok: missing.length === 0,
+    missing
+  };
+}
+
+function findExeCandidates(exeName, expectedGameDir = '') {
+  if (!exeName) return [];
+
+  const gamesDir = getGamesDir();
+  const expectedPath = expectedGameDir ? path.resolve(expectedGameDir) : '';
+
+  try {
+    return fs.readdirSync(gamesDir, { withFileTypes: true })
+      .filter(entry => entry.isDirectory())
+      .map(entry => {
+        const gameDir = path.join(gamesDir, entry.name);
+        const exePath = path.join(gameDir, exeName);
+        return {
+          dirName: entry.name,
+          gameDir,
+          exePath
+        };
+      })
+      .filter(candidate => {
+        if (expectedPath && path.resolve(candidate.gameDir) === expectedPath) return false;
+        return fs.existsSync(candidate.exePath) && fs.statSync(candidate.exePath).isFile();
+      });
+  } catch (err) {
+    console.warn('Failed to scan exe candidates:', err.message || err);
+    return [];
+  }
 }
 
 function compareVersions(a, b) {
@@ -371,7 +523,16 @@ function isGamePresent(gameName, remoteGame = null) {
   const exePath = path.join(gameDir, cfg.exeName);
   const dirExists = fs.existsSync(gameDir) && fs.statSync(gameDir).isDirectory();
   const exeExists = fs.existsSync(exePath) && fs.statSync(exePath).isFile();
-  return { gameDir, exePath, dirExists, exeExists };
+  const candidates = exeExists ? [] : findExeCandidates(cfg.exeName, gameDir);
+  return {
+    gameDir,
+    exePath,
+    dirExists,
+    exeExists,
+    dirName: cfg.dirName,
+    exeName: cfg.exeName,
+    candidates
+  };
 }
 
 function readLocalVersions() {
@@ -572,7 +733,7 @@ function getDownloadState(item, url, state = null) {
   };
 }
 
-async function validateZipArchive(zipPath, targetDir) {
+async function validateZipArchive(zipPath, targetDir, expectedRootName = null) {
   const stat = await fsp.stat(zipPath);
   if (!stat.isFile() || stat.size === 0) {
     throw new Error('Downloaded archive is empty or missing');
@@ -617,6 +778,15 @@ async function validateZipArchive(zipPath, targetDir) {
   }
 
   const rootName = [...topNames][0];
+  const expectedName = expectedRootName === null || expectedRootName === undefined ? '' : String(expectedRootName).trim();
+  if (expectedName && rootName.toLocaleLowerCase() !== expectedName.toLocaleLowerCase()) {
+    const err = new Error(`Archive root folder mismatch: expected "${expectedName}", got "${rootName}"`);
+    err.code = 'archive_root_mismatch';
+    err.expectedRootName = expectedName;
+    err.actualRootName = rootName;
+    throw err;
+  }
+
   const rootTargetDir = path.join(targetDir, rootName);
   const normalizedTargetRoot = path.resolve(rootTargetDir);
 
@@ -661,6 +831,8 @@ async function validateZipArchive(zipPath, targetDir) {
 
 
 app.whenReady().then(async () => {
+    setupFileLogging();
+
     try {
       const cleanupResult = await cleanupTemporaryFiles();
       if (cleanupResult.deleted || cleanupResult.failed) {
@@ -682,12 +854,36 @@ app.whenReady().then(async () => {
     ipcMain.handle('check-launcher-update', () => checkLauncherUpdate());
     ipcMain.handle('download-launcher-update', () => downloadLauncherUpdate());
     ipcMain.handle('install-launcher-update', () => installLauncherUpdate());
+    ipcMain.handle('get-log-path', () => ({
+      ok: true,
+      dir: getLogsDir(),
+      path: getLogPath()
+    }));
+    ipcMain.handle('open-logs', async () => {
+      const logsDir = getLogsDir();
+      const logPath = getLogPath();
+      await fsExtra.ensureDir(logsDir);
+      await fsp.appendFile(logPath, '', 'utf8');
+      const message = await shell.openPath(logsDir);
+      if (message) {
+        return { ok: false, error: 'open_failed', message, dir: logsDir, path: logPath };
+      }
+      console.log('Logs folder opened', { dir: logsDir, path: logPath });
+      return { ok: true, dir: logsDir, path: logPath };
+    });
+    ipcMain.handle('renderer-log', (event, level, args = []) => {
+      const safeLevel = ['log', 'warn', 'error'].includes(level) ? `renderer:${level}` : 'renderer:log';
+      const safeArgs = Array.isArray(args) ? args : [args];
+      writeLogLine(safeLevel, safeArgs);
+      return { ok: true };
+    });
     ipcMain.handle('get-launcher-write-access', async () => checkLauncherWriteAccess());
     ipcMain.handle('get-games-dir', async () => {
       const gamesDir = getGamesDir();
       return {
         ok: true,
         path: gamesDir,
+        configured: isGamesDirConfigured(),
         writeAccess: await checkGamesWriteAccess()
       };
     });
@@ -704,17 +900,24 @@ app.whenReady().then(async () => {
         : await dialog.showOpenDialog(dialogOptions);
 
       if (result.canceled || !result.filePaths || !result.filePaths[0]) {
-        return { ok: false, canceled: true, path: currentDir };
+        return { ok: false, canceled: true, path: currentDir, configured: isGamesDirConfigured() };
       }
 
       const selectedDir = path.resolve(result.filePaths[0]);
       const writeAccess = await checkDirectoryWriteAccess(selectedDir);
       if (!writeAccess.ok) {
-        return { ok: false, error: 'games_dir_not_writable', path: selectedDir, writeAccess };
+        return {
+          ok: false,
+          error: 'games_dir_not_writable',
+          path: currentDir,
+          attemptedPath: selectedDir,
+          configured: isGamesDirConfigured(),
+          writeAccess
+        };
       }
 
       const savedDir = await setGamesDir(selectedDir);
-      return { ok: true, path: savedDir, writeAccess };
+      return { ok: true, path: savedDir, configured: true, writeAccess };
     });
     ipcMain.handle('minimize-window', (event) => {
       const win = BrowserWindow.fromWebContents(event.sender);
@@ -738,9 +941,19 @@ app.whenReady().then(async () => {
       const cfg = getGameConfig(gameName, remoteGame);
       if (!cfg) return { ok: false, error: 'unknown_game' };
 
-      const gameDir = path.join(getGamesDir(), cfg.dirName);
+      const presence = isGamePresent(gameName, remoteGame);
+      const candidate = presence.candidates?.[0] || null;
+      const gameDir = presence.dirExists ? presence.gameDir : candidate?.gameDir || path.join(getGamesDir(), cfg.dirName);
       if (!fs.existsSync(gameDir) || !fs.statSync(gameDir).isDirectory()) {
-        return { ok: false, error: 'not_found', path: gameDir };
+        return {
+          ok: false,
+          error: 'not_found',
+          path: gameDir,
+          expectedGameDir: presence.gameDir,
+          expectedExePath: presence.exePath,
+          candidateGameDir: candidate?.gameDir || null,
+          candidateExePath: candidate?.exePath || null
+        };
       }
 
       const errorMessage = await shell.openPath(gameDir);
@@ -748,7 +961,21 @@ app.whenReady().then(async () => {
         return { ok: false, error: 'open_failed', message: errorMessage, path: gameDir };
       }
 
-      return { ok: true, path: gameDir };
+      console.log('Game folder opened', {
+        gameName,
+        path: gameDir,
+        expectedGameDir: presence.gameDir,
+        usedCandidate: !!candidate && !presence.dirExists
+      });
+
+      return {
+        ok: true,
+        path: gameDir,
+        expectedGameDir: presence.gameDir,
+        expectedExePath: presence.exePath,
+        candidateGameDir: candidate?.gameDir || null,
+        candidateExePath: candidate?.exePath || null
+      };
     });
     createWindow();
     sendLauncherUpdateState();
@@ -778,13 +1005,25 @@ app.whenReady().then(async () => {
         let remoteSource = null;
         let remoteSourceUrl = null;
         let remoteError = null;
+        let downloadPending = false;
+        let manifestCheck = { ok: false, missing: REQUIRED_REMOTE_GAME_FIELDS.slice() };
         try {
           const remote = await getRemoteVersions();
           remoteGame = getRemoteGame(remote, gameName);
+          manifestCheck = validateRemoteGameConfig(remoteGame);
           remoteRaw = remoteGame?.version ?? null;
           remoteDownloadUrl = remoteGame?.downloadUrl || null;
+          downloadPending = !remoteGame || !remoteDownloadUrl;
           remoteSource = remote?.__source || null;
           remoteSourceUrl = remote?.__sourceUrl || null;
+          console.log('Version checked', {
+            gameName,
+            source: remoteSource,
+            version: remoteRaw,
+            dirName: remoteGame?.dirName || null,
+            exeName: remoteGame?.exeName || null,
+            manifestOk: manifestCheck.ok
+          });
         } catch (err) {
           remoteError = String(err);
           console.warn('Remote version unavailable:', err.message || err);
@@ -811,12 +1050,20 @@ app.whenReady().then(async () => {
           local: localRaw,
           remote: remoteRaw,
           remoteAvailable,
+          downloadPending,
           remoteSource,
           remoteSourceUrl,
           remoteError,
+          manifestOk: manifestCheck.ok,
+          manifestMissing: manifestCheck.missing,
           downloadUrl: remoteDownloadUrl,
-          dirName: remoteGame?.dirName || null,
-          exeName: remoteGame?.exeName || null
+          dirName: presence.dirName || remoteGame?.dirName || null,
+          exeName: presence.exeName || remoteGame?.exeName || null,
+          expectedGameDir: presence.gameDir || null,
+          expectedExePath: presence.exePath || null,
+          candidateGameDir: presence.candidates?.[0]?.gameDir || null,
+          candidateExePath: presence.candidates?.[0]?.exePath || null,
+          candidateDirName: presence.candidates?.[0]?.dirName || null
         };
       } catch (err) {
         console.error('check-version handler error:', err);
@@ -824,8 +1071,9 @@ app.whenReady().then(async () => {
       }
     });
 
-    async function extractSingleRootFolderWithProgress(zipPath, targetDir, webContents = null, url = null) {
-      const { dir, rootName, rootTargetDir, filesToExtract } = await validateZipArchive(zipPath, targetDir);
+    async function extractSingleRootFolderWithProgress(zipPath, targetDir, expectedRootName = null, webContents = null, url = null) {
+      const { dir, rootName, rootTargetDir, filesToExtract } = await validateZipArchive(zipPath, targetDir, expectedRootName);
+      console.log('Archive validated', { zipPath, targetDir, rootName, expectedRootName });
       await fsExtra.ensureDir(rootTargetDir);
 
       const totalFiles = filesToExtract.length;
@@ -923,7 +1171,16 @@ app.whenReady().then(async () => {
         savePath: finalSavePath,
         gameName: pendingDownload?.gameName || null,
         version: pendingDownload?.version ?? null,
+        dirName: pendingDownload?.dirName || null,
+        exeName: pendingDownload?.exeName || null,
         targetDir: pendingDownload?.targetDir || getGamesDir()
+      });
+      console.log('Download started', {
+        gameName: pendingDownload?.gameName || null,
+        version: pendingDownload?.version ?? null,
+        savePath: finalSavePath,
+        targetDir: pendingDownload?.targetDir || getGamesDir(),
+        url: controlUrl
       });
     
       item.on('updated', (event, state) => {
@@ -945,6 +1202,11 @@ app.whenReady().then(async () => {
           activePaths.delete(controlUrl);
           const metadata = activeMetadata.get(controlUrl);
           activeMetadata.delete(controlUrl);
+          console.log('Download finished', {
+            gameName: metadata?.gameName || null,
+            state,
+            path: finalSavePath
+          });
     
           webContents.send('download-done', { url: controlUrl, state, path: finalSavePath });
     
@@ -957,7 +1219,13 @@ app.whenReady().then(async () => {
           if (ext === '.zip') {
             const targetDir = metadata?.targetDir || getGamesDir();
 
-            const res = await extractSingleRootFolderWithProgress(finalSavePath, targetDir, webContents, controlUrl);
+            const res = await extractSingleRootFolderWithProgress(finalSavePath, targetDir, metadata?.dirName || null, webContents, controlUrl);
+            console.log('Extraction finished', {
+              gameName: metadata?.gameName || null,
+              targetDir,
+              rootName: res.rootName,
+              files: res.processedFiles
+            });
 
             let versionUpdate = { ok: false, skipped: true };
             if (metadata?.gameName && metadata.version !== null && metadata.version !== undefined && metadata.version !== '') {
@@ -981,7 +1249,13 @@ app.whenReady().then(async () => {
         } catch (err) {
           console.error('Download failed:', err);
           cleanupDownloadFile(finalSavePath);
-          webContents.send('extract-error', { url: controlUrl, error: String(err) });
+          webContents.send('extract-error', {
+            url: controlUrl,
+            error: String(err),
+            code: err?.code || null,
+            expectedRootName: err?.expectedRootName || null,
+            actualRootName: err?.actualRootName || null
+          });
         }
       });
     });
@@ -992,7 +1266,7 @@ app.whenReady().then(async () => {
 
 
 
-ipcMain.handle('start-download', async (event, url, gameName = null, remoteVersion = null) => {
+ipcMain.handle('start-download', async (event, url, gameName = null, remoteVersion = null, remoteDirName = null) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   const gamesDir = getGamesDir();
 
@@ -1002,19 +1276,41 @@ ipcMain.handle('start-download', async (event, url, gameName = null, remoteVersi
 
   let downloadUrl = url;
   let version = remoteVersion;
-  if (gameName && (!downloadUrl || version === null || version === undefined || version === '')) {
+  let dirName = remoteDirName;
+  let exeName = null;
+  let remoteGame = null;
+  if (gameName) {
     try {
       const remote = await getRemoteVersions();
-      const remoteGame = getRemoteGame(remote, gameName);
+      remoteGame = getRemoteGame(remote, gameName);
+      const manifestCheck = validateRemoteGameConfig(remoteGame);
+      if (!manifestCheck.ok) {
+        return { canceled: true, error: 'manifest_invalid', missing: manifestCheck.missing };
+      }
       if (!downloadUrl) downloadUrl = remoteGame?.downloadUrl || '';
       if (version === null || version === undefined || version === '') version = remoteGame?.version;
+      if (!dirName) dirName = remoteGame?.dirName || '';
+      exeName = remoteGame?.exeName || null;
     } catch (err) {
       console.warn('Failed to resolve remote game data for download:', err.message || err);
     }
+
+    const cfg = getGameConfig(gameName, remoteGame);
+    if (!dirName) dirName = cfg?.dirName || null;
+    if (!exeName) exeName = cfg?.exeName || null;
   }
 
   if (!downloadUrl) {
     return { canceled: true, error: 'download_url_unavailable' };
+  }
+
+  if (gameName && (!dirName || !exeName || version === null || version === undefined || version === '')) {
+    const missing = [];
+    if (version === null || version === undefined || version === '') missing.push('version');
+    if (!downloadUrl) missing.push('downloadUrl');
+    if (!dirName) missing.push('dirName');
+    if (!exeName) missing.push('exeName');
+    return { canceled: true, error: 'manifest_invalid', missing };
   }
 
   const writeAccess = await checkGamesWriteAccess();
@@ -1036,7 +1332,16 @@ ipcMain.handle('start-download', async (event, url, gameName = null, remoteVersi
     return { canceled: true, error: 'not_enough_space', ...spaceCheck };
   }
 
-  pending.set(downloadUrl, { url: downloadUrl, savePath, gameName, version, targetDir });
+  pending.set(downloadUrl, { url: downloadUrl, savePath, gameName, version, dirName, exeName, targetDir });
+  console.log('Download queued', {
+    gameName,
+    version,
+    dirName,
+    exeName,
+    savePath,
+    targetDir,
+    size: spaceCheck.downloadBytes
+  });
 
   const bw = BrowserWindow.fromWebContents(event.sender);
   if (!bw) throw new Error('No browser window available for download');
@@ -1106,10 +1411,27 @@ ipcMain.handle('launch-game', async (event, gameName = 'Barotrauma') => {
     return { ok: false, error: 'unknown_game' };
   }
 
-  const exePath = path.join(getGamesDir(), cfg.dirName, cfg.exeName);
+  const presence = isGamePresent(gameName, remoteGame);
+  const candidate = presence.candidates?.[0] || null;
+  const exePath = presence.exePath || path.join(getGamesDir(), cfg.dirName, cfg.exeName);
+  console.log('Launch requested', {
+    gameName,
+    exePath,
+    expectedGameDir: presence.gameDir,
+    candidateExePath: candidate?.exePath || null
+  });
 
   if (!fs.existsSync(exePath)) {
-    return { ok: false, error: 'not_found', message: `File not found: ${exePath}` };
+    return {
+      ok: false,
+      error: 'not_found',
+      message: `File not found: ${exePath}`,
+      expectedGameDir: presence.gameDir,
+      expectedExePath: exePath,
+      candidateGameDir: candidate?.gameDir || null,
+      candidateExePath: candidate?.exePath || null,
+      candidateDirName: candidate?.dirName || null
+    };
   }
 
   gameLaunchInProgress = true;
@@ -1127,12 +1449,14 @@ ipcMain.handle('launch-game', async (event, gameName = 'Barotrauma') => {
     }
 
     child.once('exit', (code, signal) => {
+      console.log('Game exited', { gameName, path: exePath, code, signal });
       if (win && !win.isDestroyed()) {
         win.webContents.send('game-exited', { path: exePath, code, signal });
       }
     });
 
     child.once('error', (err) => {
+      console.error('Game process error:', { gameName, path: exePath, error: String(err) });
       if (win && !win.isDestroyed()) {
         win.webContents.send('game-error', { error: String(err) });
       }

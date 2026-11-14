@@ -6,7 +6,47 @@
   }
 });
 
+function normalizeRendererLogArg(arg) {
+  if (arg instanceof Error) {
+    return arg.stack || (arg.name + ": " + arg.message);
+  }
+  if (typeof arg === "string") {
+    return arg;
+  }
+  if (arg === null || arg === undefined) {
+    return String(arg);
+  }
+  if (typeof arg === "object") {
+    try {
+      return JSON.stringify(arg);
+    } catch {
+      return String(arg);
+    }
+  }
+  return String(arg);
+}
+
+function setupRendererLogging() {
+  if (!window.api || typeof window.api.writeRendererLog !== "function") return;
+
+  ["log", "warn", "error"].forEach(level => {
+    const original = console[level].bind(console);
+    console[level] = (...args) => {
+      original(...args);
+      try {
+        const result = window.api.writeRendererLog(level, args.map(normalizeRendererLogArg));
+        if (result && typeof result.catch === "function") {
+          result.catch(() => {});
+        }
+      } catch {}
+    };
+  });
+}
+
+setupRendererLogging();
+
 const mainEl = document.querySelector(".main");
+const gamePlaceholder = document.getElementById("game-placeholder");
 const status = document.getElementById("version-b");
 const localVersion = document.getElementById("local-version");
 const serverVersion = document.getElementById("server-version");
@@ -14,6 +54,10 @@ const serverSource = document.getElementById("server-source");
 const launcherVersion = document.getElementById("launcher-version");
 const launcherUpdateStatus = document.getElementById("launcher-update-status");
 const launcherUpdateBtn = document.getElementById("launcher-update-btn");
+const openLogsBtn = document.getElementById("open-logs-btn");
+const firstRunOverlay = document.getElementById("first-run-overlay");
+const firstRunChooseBtn = document.getElementById("first-run-choose-btn");
+const firstRunError = document.getElementById("first-run-error");
 const minimizeWindowBtn = document.getElementById("minimize-window-btn");
 const closeWindowBtn = document.getElementById("close-window-btn");
 const checkBtn = document.getElementById("check-btn");
@@ -40,6 +84,11 @@ const GAMES = {
   SlayTheSpire2: {
     label: "Slay the Spire 2",
     background: "assets/images/backgroundSlayTheSpire2.png"
+  },
+  CasualtiesUnknown: {
+    label: "Casualties Unknown",
+    background: "assets/images/backgroundCasualtiesUnknown.png",
+    backgroundSize: "cover"
   }
 };
 
@@ -69,6 +118,7 @@ let launcherWriteAccess = { ok: true };
 let launcherUpdateState = { status: "idle", currentVersion: null };
 let launcherUpdateActionLock = false;
 let gamesDirPath = "";
+let gamesDirConfigured = true;
 
 let downloadPercent = 0;
 let extractPercent = 0;
@@ -89,19 +139,49 @@ function getPresence(gameName) {
     exeExists: false,
     updateAvailable: false,
     remoteAvailable: false,
+    downloadPending: false,
     local: null,
     remote: null,
     downloadUrl: "",
-    remoteSource: null
+    remoteSource: null,
+    manifestOk: true,
+    manifestMissing: [],
+    dirName: null,
+    exeName: null,
+    expectedGameDir: null,
+    expectedExePath: null,
+    candidateGameDir: null,
+    candidateExePath: null,
+    candidateDirName: null
   };
 }
 
-function setPresence(gameName, installed, exeExists, updateAvailable = false, local = null, remote = null, remoteAvailable = false, downloadUrl = "", remoteSource = null) {
-  gamePresence[gameName] = { installed, exeExists, updateAvailable, local, remote, remoteAvailable, downloadUrl, remoteSource };
+function setPresence(gameName, installed, exeExists, updateAvailable = false, local = null, remote = null, remoteAvailable = false, downloadUrl = "", remoteSource = null, details = {}) {
+  gamePresence[gameName] = {
+    installed,
+    exeExists,
+    updateAvailable,
+    local,
+    remote,
+    remoteAvailable,
+    downloadPending: !!details.downloadPending,
+    downloadUrl,
+    remoteSource,
+    manifestOk: details.manifestOk === undefined ? true : !!details.manifestOk,
+    manifestMissing: Array.isArray(details.manifestMissing) ? details.manifestMissing : [],
+    dirName: details.dirName || null,
+    exeName: details.exeName || null,
+    expectedGameDir: details.expectedGameDir || null,
+    expectedExePath: details.expectedExePath || null,
+    candidateGameDir: details.candidateGameDir || null,
+    candidateExePath: details.candidateExePath || null,
+    candidateDirName: details.candidateDirName || null
+  };
 }
 
-function setStatusText(text) {
+function setStatusText(text, title = "") {
   status.textContent = text;
+  status.title = title || "";
 }
 
 function formatVersion(value) {
@@ -126,6 +206,22 @@ function formatRemoteSource(source) {
   return "-";
 }
 
+function formatMissingManifestFields(fields) {
+  const list = Array.isArray(fields) ? fields.filter(Boolean) : [];
+  return list.length ? list.join(", ") : "-";
+}
+
+function getExeDiagnosticTitle(info) {
+  const lines = [];
+  if (info.expectedExePath) {
+    lines.push("Лаунчер ищет: " + info.expectedExePath);
+  }
+  if (info.candidateExePath) {
+    lines.push("Найдено в другой папке: " + info.candidateExePath);
+  }
+  return lines.join("\n");
+}
+
 function setSourceText(source) {
   if (serverSource) {
     serverSource.textContent = "источник версии: " + formatRemoteSource(source);
@@ -135,8 +231,19 @@ function setSourceText(source) {
 function setGamesFolderText(folderPath) {
   gamesDirPath = folderPath || "";
   if (!gamesFolder) return;
-  gamesFolder.textContent = "папка игр: " + (gamesDirPath || "-");
+  gamesFolder.textContent = "папка игр: " + (gamesDirConfigured ? (gamesDirPath || "-") : "не выбрана");
   gamesFolder.title = gamesDirPath || "";
+}
+
+function setFirstRunVisible(visible) {
+  if (!firstRunOverlay) return;
+  firstRunOverlay.classList.toggle("first-run-overlay--hidden", !visible);
+}
+
+function setFirstRunError(text) {
+  if (firstRunError) {
+    firstRunError.textContent = text || "";
+  }
 }
 
 function getLauncherUpdateStatusText(state) {
@@ -191,16 +298,24 @@ function renderCurrentGameStatus() {
   setVersionText(presence.local, presence.remote);
   setSourceText(presence.remoteSource);
 
-  if (!launcherWriteAccess.ok) {
-    status.textContent = WRITE_PERMISSION_MESSAGE;
+  if (!gamesDirConfigured) {
+    setStatusText("выберите папку установки игр");
+  } else if (!launcherWriteAccess.ok) {
+    setStatusText(WRITE_PERMISSION_MESSAGE);
+  } else if (presence.downloadPending) {
+    setStatusText(presence.exeExists ? "игра установлена, скачивание пока недоступно" : "скачивание пока недоступно");
   } else if (!presence.remoteAvailable) {
-    status.textContent = "версия сервера недоступна";
+    setStatusText("версия сервера недоступна");
+  } else if (presence.manifestOk === false) {
+    setStatusText("данные сервера неполные: " + formatMissingManifestFields(presence.manifestMissing));
+  } else if (!presence.exeExists && presence.candidateExePath) {
+    setStatusText("папка игры не совпадает с сервером", getExeDiagnosticTitle(presence));
   } else if (!presence.exeExists) {
-    status.textContent = "игра не установлена";
+    setStatusText(presence.installed ? "файл запуска не найден" : "игра не установлена", getExeDiagnosticTitle(presence));
   } else if (presence.updateAvailable) {
-    status.textContent = "доступно обновление";
+    setStatusText("доступно обновление");
   } else {
-    status.textContent = "игра установлена";
+    setStatusText("игра установлена");
   }
 
   updatePlayButton();
@@ -289,6 +404,12 @@ function updateDownloadButton() {
   }
 
   const presence = getPresence(currentGame);
+  if (!gamesDirConfigured) {
+    downloadBtn.textContent = BUTTON_TEXT.load;
+    downloadBtn.disabled = true;
+    return;
+  }
+
   if (!launcherWriteAccess.ok) {
     downloadBtn.textContent = presence.installed && presence.exeExists
       ? (presence.updateAvailable ? BUTTON_TEXT.update : BUTTON_TEXT.loaded)
@@ -299,6 +420,12 @@ function updateDownloadButton() {
 
   if (!presence.remoteAvailable) {
     downloadBtn.textContent = presence.installed && presence.exeExists ? BUTTON_TEXT.loaded : BUTTON_TEXT.load;
+    downloadBtn.disabled = true;
+    return;
+  }
+
+  if (presence.manifestOk === false) {
+    downloadBtn.textContent = presence.installed && presence.exeExists ? BUTTON_TEXT.update : BUTTON_TEXT.load;
     downloadBtn.disabled = true;
     return;
   }
@@ -326,13 +453,13 @@ function updateCancelButton() {
 
 function updateCheckButton() {
   if (!checkBtn) return;
-  checkBtn.disabled = downloadInProgress || versionCheckInProgress;
+  checkBtn.disabled = !gamesDirConfigured || downloadInProgress || versionCheckInProgress;
 }
 
 function updateFolderButton() {
   if (!openFolderBtn) return;
   const presence = getPresence(currentGame);
-  openFolderBtn.disabled = downloadInProgress || !presence.installed;
+  openFolderBtn.disabled = !gamesDirConfigured || downloadInProgress || (!presence.installed && !presence.candidateGameDir);
 }
 
 function updatePlayButton() {
@@ -355,6 +482,11 @@ function updatePlayButton() {
     launchBtn.disabled = true;
     return;
   }
+  if (!gamesDirConfigured) {
+    launchBtn.textContent = BUTTON_TEXT.play;
+    launchBtn.disabled = true;
+    return;
+  }
 
   const presence = getPresence(currentGame);
   if (presence.installed && presence.exeExists) {
@@ -370,13 +502,17 @@ function updatePlayButton() {
 async function refreshGamesDirState() {
   try {
     const res = await window.api.getGamesDir();
+    gamesDirConfigured = !!(res && res.configured);
     setGamesFolderText(res && res.path ? res.path : "");
+    setFirstRunVisible(!gamesDirConfigured);
     launcherWriteAccess = res && res.writeAccess && typeof res.writeAccess.ok === "boolean"
       ? res.writeAccess
       : { ok: false };
   } catch (err) {
     console.error("getGamesDir error:", err);
+    gamesDirConfigured = false;
     setGamesFolderText("");
+    setFirstRunVisible(true);
     launcherWriteAccess = { ok: false };
   } finally {
     renderCurrentGameStatus();
@@ -403,7 +539,15 @@ function setCurrentGame(gameName, options = {}) {
   });
 
   if (mainEl) {
-    mainEl.style.backgroundImage = "url(" + GAMES[gameName].background + ")";
+    const background = GAMES[gameName].background;
+    mainEl.style.backgroundImage = background ? "url(" + background + ")" : "none";
+    mainEl.style.backgroundSize = GAMES[gameName].backgroundSize || "";
+    mainEl.style.backgroundPosition = GAMES[gameName].backgroundSize ? "center" : "";
+    mainEl.classList.toggle("main--no-background", !background);
+    if (gamePlaceholder) {
+      gamePlaceholder.textContent = GAMES[gameName].label;
+      gamePlaceholder.hidden = !!background;
+    }
   }
 
   if (shouldRefresh) {
@@ -466,22 +610,43 @@ launcherUpdateBtn.addEventListener("click", async () => {
   }
 });
 
-gamesDirBtn.addEventListener("click", async () => {
+if (openLogsBtn) {
+  openLogsBtn.addEventListener("click", async () => {
+    try {
+      const res = await window.api.openLogs();
+      if (!res || !res.ok) {
+        setStatusText("ошибка открытия логов");
+        console.warn("open logs failed", res);
+      }
+    } catch (err) {
+      setStatusText("ошибка открытия логов");
+      console.error("open logs ipc error:", err);
+    }
+  });
+}
+
+async function chooseGamesDirFromUser() {
   if (actionLock || downloadInProgress || gameRunning) return;
 
   actionLock = true;
+  setFirstRunError("");
   try {
     const res = await window.api.chooseGamesDir();
     if (!res || res.canceled) return;
     if (!res.ok) {
+      gamesDirConfigured = !!res.configured;
       if (res.path) setGamesFolderText(res.path);
       launcherWriteAccess = res.writeAccess || { ok: false };
+      setFirstRunVisible(!gamesDirConfigured);
+      setFirstRunError("Нет прав записи в выбранную папку.");
       setStatusText(WRITE_PERMISSION_MESSAGE);
       updatePlayButton();
       return;
     }
 
+    gamesDirConfigured = true;
     setGamesFolderText(res.path);
+    setFirstRunVisible(false);
     launcherWriteAccess = res.writeAccess || { ok: true, path: res.path };
     setStatusText("папка игр выбрана");
     await refreshAllGames();
@@ -493,7 +658,13 @@ gamesDirBtn.addEventListener("click", async () => {
     renderCurrentGameStatus();
     updatePlayButton();
   }
-});
+}
+
+gamesDirBtn.addEventListener("click", chooseGamesDirFromUser);
+
+if (firstRunChooseBtn) {
+  firstRunChooseBtn.addEventListener("click", chooseGamesDirFromUser);
+}
 
 window.addEventListener("offline", () => {
   pauseActiveDownload("соединение прервано, загрузка на паузе");
@@ -540,6 +711,13 @@ downloadBtn.addEventListener("click", async () => {
   }
 
   const presence = getPresence(currentGame);
+  if (!gamesDirConfigured) {
+    setStatusText("выберите папку установки игр");
+    setFirstRunVisible(true);
+    updatePlayButton();
+    return;
+  }
+
   if (!launcherWriteAccess.ok) {
     setStatusText(WRITE_PERMISSION_MESSAGE);
     updatePlayButton();
@@ -548,6 +726,11 @@ downloadBtn.addEventListener("click", async () => {
 
   if (!presence.remoteAvailable) {
     setStatusText("версия сервера недоступна");
+    updatePlayButton();
+    return;
+  }
+  if (presence.manifestOk === false) {
+    setStatusText("данные сервера неполные: " + formatMissingManifestFields(presence.manifestMissing));
     updatePlayButton();
     return;
   }
@@ -566,7 +749,7 @@ downloadBtn.addEventListener("click", async () => {
     activeDownloadGame = currentGame;
     resetDownloadStats();
     updatePlayButton();
-    const res = await window.api.startDownload(downloadUrl, currentGame, presence.remote);
+    const res = await window.api.startDownload(downloadUrl, currentGame, presence.remote, presence.dirName);
     activeDownloadUrl = downloadUrl;
     if (res && res.canceled) {
       downloadInProgress = false;
@@ -578,6 +761,8 @@ downloadBtn.addEventListener("click", async () => {
         setStatusText("ссылка для скачивания не указана");
       } else if (res.error === "download_already_running") {
         setStatusText("уже идет загрузка");
+      } else if (res.error === "manifest_invalid") {
+        setStatusText("данные сервера неполные: " + formatMissingManifestFields(res.missing));
       } else if (res.error === "not_enough_space") {
         setStatusText("недостаточно места");
         if (downloadStats) {
@@ -623,8 +808,8 @@ openFolderBtn.addEventListener("click", async () => {
   if (actionLock || downloadInProgress) return;
 
   const presence = getPresence(currentGame);
-  if (!presence.installed) {
-    setStatusText("папка игры не найдена");
+  if (!presence.installed && !presence.candidateGameDir) {
+    setStatusText("папка игры не найдена", getExeDiagnosticTitle(presence));
     updatePlayButton();
     return;
   }
@@ -662,8 +847,14 @@ launchBtn.addEventListener("click", async () => {
       if (res.error === "already_running") {
         gameRunning = true;
       } else if (res.error === "not_found") {
-        setPresence(currentGame, false, false);
-        setStatusText("файл запуска не найден");
+        const diagnostic = {
+          expectedExePath: res.expectedExePath,
+          candidateExePath: res.candidateExePath
+        };
+        setStatusText(
+          res.candidateExePath ? "папка игры не совпадает с сервером" : "файл запуска не найден",
+          getExeDiagnosticTitle(diagnostic)
+        );
       } else {
         console.warn("launch error:", res.message || res.error);
       }
@@ -767,7 +958,14 @@ window.api.onExtractError(info => {
   if (downloadStats) {
     downloadStats.textContent = "ошибка распаковки";
   }
-  setStatusText("ошибка архива");
+  if (info.code === "archive_root_mismatch") {
+    setStatusText(
+      "папка в архиве не совпадает с сервером",
+      "Ожидалось: " + (info.expectedRootName || "-") + "\nВ архиве: " + (info.actualRootName || "-")
+    );
+  } else {
+    setStatusText("ошибка архива", info.error || "");
+  }
   updatePlayButton();
 });
 
@@ -807,7 +1005,18 @@ async function refreshVersionState(gameName, options = {}) {
       return;
     }
 
-    setPresence(gameName, !!res.installed, !!res.exeExists, !!res.updateAvailable, res.local, res.remote, !!res.remoteAvailable, res.downloadUrl || "", res.remoteSource || null);
+    setPresence(gameName, !!res.installed, !!res.exeExists, !!res.updateAvailable, res.local, res.remote, !!res.remoteAvailable, res.downloadUrl || "", res.remoteSource || null, {
+      manifestOk: res.manifestOk,
+      downloadPending: res.downloadPending,
+      manifestMissing: res.manifestMissing,
+      dirName: res.dirName,
+      exeName: res.exeName,
+      expectedGameDir: res.expectedGameDir,
+      expectedExePath: res.expectedExePath,
+      candidateGameDir: res.candidateGameDir,
+      candidateExePath: res.candidateExePath,
+      candidateDirName: res.candidateDirName
+    });
     if (gameName === currentGame) {
       renderCurrentGameStatus();
     }
@@ -858,6 +1067,10 @@ async function refreshLauncherUpdateState() {
 
 setCurrentGame(currentGame, { refresh: false });
 refreshLauncherUpdateState();
-refreshGamesDirState().finally(() => {
-  refreshAllGames();
+refreshGamesDirState().then(() => {
+  if (gamesDirConfigured) {
+    refreshAllGames();
+  }
+}).catch(err => {
+  console.error("initial games dir check failed:", err);
 });

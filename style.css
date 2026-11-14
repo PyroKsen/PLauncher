@@ -24,12 +24,25 @@ h1 {
     overflow: hidden;
 }
 
+.main--no-background {
+    background-color: #202326;
+}
+
+.game-placeholder {
+    margin: 48px 24px;
+    color: white;
+    font-family: Arial, sans-serif;
+    font-size: 28px;
+    line-height: 1.2;
+    overflow-wrap: break-word;
+}
+
 .window-controls {
     -webkit-app-region: no-drag;
     position: absolute;
     top: 0;
     right: 0;
-    z-index: 10;
+    z-index: 30;
     display: flex;
 }
 
@@ -39,6 +52,8 @@ h1 {
     height: 32px;
     border: 0;
     color: white;
+    cursor: pointer;
+    font-family: Arial, sans-serif;
     font-size: 18px;
     line-height: 32px;
     background: rgba(0, 0, 0, .35);
@@ -50,6 +65,56 @@ h1 {
 
 .window-control--close:hover {
     background: rgba(196, 43, 28, .9);
+}
+
+.first-run-overlay {
+    -webkit-app-region: no-drag;
+    position: absolute;
+    inset: 0;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, .72);
+}
+
+.first-run-overlay--hidden {
+    display: none;
+}
+
+.first-run-dialog {
+    -webkit-app-region: no-drag;
+    width: 420px;
+    padding: 28px;
+    border: 1px solid rgba(255, 255, 255, .22);
+    background: rgba(10, 12, 16, .94);
+    color: white;
+    font-family: Arial, sans-serif;
+}
+
+.first-run-dialog__title {
+    margin-bottom: 12px;
+    font-size: 20px;
+    font-weight: 700;
+}
+
+.first-run-dialog__text {
+    margin-bottom: 18px;
+    font-size: 14px;
+    line-height: 1.4;
+    color: rgba(255, 255, 255, .82);
+}
+
+.first-run-dialog__button {
+    width: 100%;
+    height: 34px;
+}
+
+.first-run-dialog__error {
+    min-height: 16px;
+    margin-top: 12px;
+    color: #ff8d80;
+    font-size: 12px;
 }
 
 .sidebar {
@@ -80,25 +145,36 @@ h1 {
 
 .sidebar__button {
     -webkit-app-region: no-drag;
-    display: block;
+    display: flex;
+    align-items: center;
     width: 100%;
+    min-height: 34px;
+    padding: 0 12px;
     text-align: left;
-    margin-bottom: 12px;
-    border: 0;
-    color: grey;
+    margin-bottom: 8px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    color: rgba(255, 255, 255, .58);
     font-size: 15px;
     font-style: normal;
     font-weight: 700;
     line-height: normal;
-    background-color: rgba(0, 0, 0, 0);
+    background: rgba(255, 255, 255, 0);
+    cursor: pointer;
+    transition: background .15s ease, border-color .15s ease, color .15s ease;
 }
 
 .sidebar__button:hover {
     color: white;
+    border-color: rgba(255, 255, 255, .12);
+    background: rgba(255, 255, 255, .08);
 }
 
 .sidebar__button--active {
     color: white;
+    border-color: rgba(94, 222, 184, .42);
+    background: rgba(94, 222, 184, .13);
+    box-shadow: inset 3px 0 0 rgba(94, 222, 184, .9);
 }
 
 .launcher-update {
@@ -123,20 +199,32 @@ h1 {
 .launcher-update__button {
     width: 100%;
     min-width: 100%;
+    height: 32px;
+    padding: 0 10px;
+    white-space: nowrap;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.launcher-update__button + .launcher-update__button {
+    margin-top: 8px;
 }
 
 .base {
     -webkit-app-region: no-drag;
-    display: table-column;
+    display: flex;
+    flex-direction: column;
     width: 100%;
     height: 100%;
+    min-width: 0;
 }
 
 .base__top {
     -webkit-app-region: no-drag;
     display: flex;
     width: 100%;
-    height: 90%;
+    flex: 1 1 auto;
+    min-height: 0;
 }
 
 .base__top-left {
@@ -156,28 +244,73 @@ h1 {
     color: white;
     -webkit-app-region: no-drag;
     display: flex;
+    flex-direction: column;
+    justify-content: center;
     align-items: center;
-    gap: 6px;
-    padding: 0 10px;
+    gap: 9px;
+    padding: 10px 18px 14px;
     width: 100%;
-    height: 10%;
+    min-height: 112px;
+    border-top: 1px solid rgba(255, 255, 255, .14);
+    background: linear-gradient(180deg, rgba(3, 7, 12, .2), rgba(3, 7, 12, .72));
+}
+
+.progress-strip {
+    -webkit-app-region: no-drag;
+    display: grid;
+    grid-template-columns: minmax(180px, 1fr) 44px minmax(180px, 260px);
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    min-width: 0;
 }
 
 #combined-progress {
-    width: 160px;
-    flex: 0 0 160px;
+    width: 100%;
+    height: 9px;
+    border: 0;
+    border-radius: 999px;
+    overflow: hidden;
+    background: rgba(255, 255, 255, .18);
+}
+
+#combined-progress::-webkit-progress-bar {
+    border-radius: 999px;
+    background: rgba(255, 255, 255, .18);
+}
+
+#combined-progress::-webkit-progress-value {
+    border-radius: 999px;
+    background: linear-gradient(90deg, #5edeb8, #66a6ff);
+}
+
+#combined-percent {
+    -webkit-app-region: no-drag;
+    font-family: Arial, sans-serif;
+    font-size: 12px;
+    font-weight: 700;
+    text-align: right;
+    color: rgba(255, 255, 255, .9);
 }
 
 .download-stats {
     -webkit-app-region: no-drag;
-    flex: 1 1 110px;
-    min-width: 90px;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     font-family: Arial, sans-serif;
     font-size: 14px;
     color: white;
+}
+
+.action-bar {
+    -webkit-app-region: no-drag;
+    display: grid;
+    grid-template-columns: 1.35fr .92fr .78fr 1.25fr 1.25fr .95fr;
+    gap: 8px;
+    width: 100%;
+    min-width: 0;
 }
 
 .spisok__element {
@@ -196,11 +329,80 @@ h1 {
 }
 
 button {
-    flex: 0 0 auto;
-    min-width: 64px;
-    width: auto;
-    height: 30px;
-    padding: 0 8px;
-    white-space: nowrap;
+    -webkit-app-region: no-drag;
+    font-family: Arial, sans-serif;
+}
+
+.control-button,
+.launcher-update__button,
+.first-run-dialog__button {
+    min-width: 0;
+    border: 1px solid rgba(255, 255, 255, .16);
+    border-radius: 8px;
+    color: rgba(255, 255, 255, .92);
+    background: linear-gradient(180deg, rgba(255, 255, 255, .13), rgba(255, 255, 255, .06));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .12), 0 8px 18px rgba(0, 0, 0, .18);
+    cursor: pointer;
+    transition: background .15s ease, border-color .15s ease, color .15s ease, box-shadow .15s ease;
+}
+
+.control-button {
+    width: 100%;
+    min-height: 40px;
+    padding: 0 10px;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    text-align: center;
     font-size: 12px;
+    font-weight: 700;
+    line-height: 1.08;
+}
+
+.control-button:hover:not(:disabled),
+.launcher-update__button:hover:not(:disabled),
+.first-run-dialog__button:hover:not(:disabled) {
+    border-color: rgba(255, 255, 255, .32);
+    background: linear-gradient(180deg, rgba(255, 255, 255, .2), rgba(255, 255, 255, .09));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .16), 0 10px 22px rgba(0, 0, 0, .24);
+}
+
+.control-button:active:not(:disabled),
+.launcher-update__button:active:not(:disabled),
+.first-run-dialog__button:active:not(:disabled) {
+    background: rgba(255, 255, 255, .1);
+    box-shadow: inset 0 2px 8px rgba(0, 0, 0, .22);
+}
+
+.control-button:disabled,
+.launcher-update__button:disabled,
+.first-run-dialog__button:disabled {
+    color: rgba(255, 255, 255, .38);
+    border-color: rgba(255, 255, 255, .08);
+    background: rgba(255, 255, 255, .045);
+    box-shadow: none;
+    cursor: default;
+}
+
+.control-button--primary {
+    color: #052018;
+    border-color: rgba(94, 222, 184, .72);
+    background: linear-gradient(180deg, #73f0cf, #47cba6);
+    box-shadow: 0 10px 24px rgba(57, 216, 170, .24);
+}
+
+.control-button--primary:hover:not(:disabled) {
+    border-color: rgba(143, 255, 221, .9);
+    background: linear-gradient(180deg, #8dffdf, #54d9b5);
+    box-shadow: 0 12px 28px rgba(57, 216, 170, .3);
+}
+
+.control-button--danger {
+    border-color: rgba(255, 111, 96, .32);
+    color: rgba(255, 235, 232, .94);
+    background: linear-gradient(180deg, rgba(255, 111, 96, .2), rgba(160, 42, 34, .16));
+}
+
+.control-button--danger:hover:not(:disabled) {
+    border-color: rgba(255, 130, 116, .52);
+    background: linear-gradient(180deg, rgba(255, 130, 116, .28), rgba(160, 42, 34, .22));
 }
