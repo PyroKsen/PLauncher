@@ -6,6 +6,7 @@ const fs = require('fs');
 const unzipper = require('unzipper');
 const fsExtra = require('fs-extra');
 const fsp = fs.promises;
+const { pipeline } = require('node:stream/promises');
 const { spawn } = require('child_process');
 const { autoUpdater } = require('electron-updater');
 
@@ -435,6 +436,11 @@ const GAME_CONFIG = {
   CasualtiesUnknown: {
     dirName: 'Casualties Unknown',
     exeName: 'CasualtiesUnknown.exe'
+  },
+  RiskOfRain2: {
+    dirName: 'Risk of Rain 2',
+    exeName: 'Risk of Rain 2.exe',
+    preserveDirectories: ['FreeTP']
   }
 };
 
@@ -1071,12 +1077,39 @@ app.whenReady().then(async () => {
       }
     });
 
-    async function extractSingleRootFolderWithProgress(zipPath, targetDir, expectedRootName = null, webContents = null, url = null) {
+    async function extractSingleRootFolderWithProgress(zipPath, targetDir, expectedRootName = null, webContents = null, url = null, preserveDirectories = []) {
       const { dir, rootName, rootTargetDir, filesToExtract } = await validateZipArchive(zipPath, targetDir, expectedRootName);
       console.log('Archive validated', { zipPath, targetDir, rootName, expectedRootName });
+
+      const preservedDirectories = new Set();
+      for (const directoryName of preserveDirectories) {
+        try {
+          await fsp.lstat(path.join(rootTargetDir, directoryName));
+          preservedDirectories.add(directoryName.toLowerCase());
+        } catch (err) {
+          if (err.code !== 'ENOENT') throw err;
+        }
+      }
+
+      // Leave existing save folders in place, including archive entries using Windows path aliases.
+      const entriesToExtract = dir.files.filter(entry => {
+        const entryPath = entry.path.replace(/\\/g, '/');
+        const relativeUnderRoot = entryPath === rootName ? '' : entryPath.substring(rootName.length + 1);
+        const relativeDestination = path.relative(rootTargetDir, path.resolve(rootTargetDir, relativeUnderRoot));
+        const topDirectory = relativeDestination.split(path.sep)[0].split(':')[0].replace(/[ .]+$/g, '').toLowerCase();
+        return !preservedDirectories.has(topDirectory);
+      });
+      const totalFiles = entriesToExtract.filter(entry => entry.type === 'File').length;
+      const skippedFiles = filesToExtract.length - totalFiles;
+      if (preservedDirectories.size) {
+        console.log('Existing game folders preserved', {
+          rootTargetDir,
+          directories: [...preservedDirectories],
+          skippedFiles
+        });
+      }
       await fsExtra.ensureDir(rootTargetDir);
 
-      const totalFiles = filesToExtract.length;
       let processedFiles = 0;
     
       if (webContents && url) {
@@ -1085,7 +1118,7 @@ app.whenReady().then(async () => {
     
       const normalizedTargetRoot = path.resolve(rootTargetDir) + path.sep;
     
-      for (const entry of dir.files) {
+      for (const entry of entriesToExtract) {
         let entryPath = entry.path.replace(/\\/g, '/');
     
         if (!entryPath.startsWith(rootName + '/') && entryPath !== rootName) {
@@ -1106,12 +1139,7 @@ app.whenReady().then(async () => {
           await fsExtra.ensureDir(destPath);
         } else { // File
           await fsExtra.ensureDir(path.dirname(destPath));
-          await new Promise((resolve, reject) => {
-            entry.stream()
-              .pipe(fs.createWriteStream(destPath))
-              .on('finish', resolve)
-              .on('error', reject);
-          });
+          await pipeline(entry.stream(), fs.createWriteStream(destPath));
     
           processedFiles++;
           if (webContents && url) {
@@ -1137,7 +1165,7 @@ app.whenReady().then(async () => {
         });
       }
     
-      return { rootName, totalFiles, processedFiles };
+      return { rootName, totalFiles, processedFiles, skippedFiles, preservedDirectories: [...preservedDirectories] };
     }
 
 
@@ -1219,7 +1247,8 @@ app.whenReady().then(async () => {
           if (ext === '.zip') {
             const targetDir = metadata?.targetDir || getGamesDir();
 
-            const res = await extractSingleRootFolderWithProgress(finalSavePath, targetDir, metadata?.dirName || null, webContents, controlUrl);
+            const preserveDirectories = GAME_CONFIG[metadata?.gameName]?.preserveDirectories || [];
+            const res = await extractSingleRootFolderWithProgress(finalSavePath, targetDir, metadata?.dirName || null, webContents, controlUrl, preserveDirectories);
             console.log('Extraction finished', {
               gameName: metadata?.gameName || null,
               targetDir,

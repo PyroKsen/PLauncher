@@ -89,6 +89,11 @@ const GAMES = {
     label: "Casualties Unknown",
     background: "assets/images/backgroundCasualtiesUnknown.png",
     backgroundSize: "cover"
+  },
+  RiskOfRain2: {
+    label: "Risk of Rain 2",
+    background: "assets/images/backgroundRiskOfRain2.png",
+    backgroundSize: "cover"
   }
 };
 
@@ -202,7 +207,6 @@ function setVersionText(local, remote) {
 
 function formatRemoteSource(source) {
   if (source === "github") return "GitHub";
-  if (source === "yandex") return "Yandex Disk";
   return "-";
 }
 

@@ -5,7 +5,7 @@
     "unzipper": "^0.12.3"
   },
   "name": "plauncher",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Game launcher for PLauncher",
   "main": "main.js",
   "devDependencies": {
@@ -30,11 +30,14 @@
       "!*.zip",
       "!.git/**",
       "!.vscode/**",
+      "!tt.txt",
       "!Barotrauma/**",
       "!LethalCompany/**",
       "!Slay The Spire 2/**",
       "!Casualties Unknown/**",
       "!CasualtiesUnknown/**",
+      "!Risk of Rain 2/**",
+      "!RiskOfRain2/**",
       "!.plauncher-download-*",
       "!versions.json.tmp"
     ],
