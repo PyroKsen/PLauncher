@@ -30,7 +30,10 @@ function parseLegacyVersions(text) {
 
 async function fetchRawText(owner, repo, filePath, ref) {
   const url = buildRawUrl(owner, repo, ref, filePath);
-  const res = await fetch(url, { headers: { 'User-Agent': 'node-download-script' } });
+  const res = await fetch(url, {
+    headers: { 'User-Agent': 'node-download-script' },
+    signal: AbortSignal.timeout(15_000)
+  });
   if (!res.ok) {
     const err = new Error(`HTTP ${res.status}`);
     err.status = res.status;

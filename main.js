@@ -1,5 +1,5 @@
 const { app, BrowserWindow, ipcMain, session } = require('electron/main')
-const { shell, dialog } = require('electron')
+const { shell, dialog, Menu, Notification, Tray } = require('electron')
 const path = require('node:path')
 const { pathToFileURL } = require('url');
 const fs = require('fs');
@@ -22,6 +22,9 @@ const DOWNLOAD_SPACE_MULTIPLIER = 2;
 const DOWNLOAD_FILE_PREFIX = '.plauncher-download-';
 const WRITE_TEST_PREFIX = '.pl_launcher_write_test_';
 const WINDOW_ICON = path.join(__dirname, 'assets', 'images', 'иконка лаунчер.png');
+const TRAY_ICON = path.join(__dirname, 'assets', 'images', 'иконка-лаунчер.ico');
+const AUTOSTART_ARG = '--launch-in-tray';
+const GAME_UPDATE_INTERVAL_MS = 30 * 60 * 1000;
 const SETTINGS_FILE_NAME = 'settings.json';
 const LAUNCHER_UPDATE_CHECK_DELAY_MS = 3000;
 const LOGS_DIR_NAME = 'logs';
@@ -37,12 +40,29 @@ const originalConsole = {
 };
 let fileLoggingReady = false;
 let fileLoggingFailed = false;
+let mainWindow = null;
+let tray = null;
+let isQuitting = false;
+let showWindowOnStart = !process.argv.includes(AUTOSTART_ARG);
+let gameUpdateTimer = null;
+let gameUpdateCheckInProgress = false;
+const gameNotifications = new Map();
+
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (hasSingleInstanceLock) {
+  app.on('second-instance', (_event, argv) => {
+    if (!argv.includes(AUTOSTART_ARG)) showMainWindow();
+  });
+} else {
+  app.exit(0);
+}
 
 const createWindow = () => {
   const win = new BrowserWindow({
     width: 1280,
     height: 720,
     icon: WINDOW_ICON,
+    show: false,
     frame: false,
     transparent: true,
     resizable: false,
@@ -59,10 +79,46 @@ const createWindow = () => {
         
     }
   })
-  win.setResizable(false)
-  win.setMaximizable(false)
-  win.setFullScreenable(false)
-  win.loadFile('index.html')
+  mainWindow = win;
+  win.once('ready-to-show', () => {
+    if (showWindowOnStart || !tray) showMainWindow();
+  });
+  win.on('close', event => {
+    if (!tray || isQuitting) return;
+    event.preventDefault();
+    showWindowOnStart = false;
+    win.hide();
+  });
+  win.on('closed', () => { mainWindow = null; });
+  win.loadFile(path.join(__dirname, 'index.html')).catch(err => {
+    console.error('Could not load launcher window:', err);
+  });
+}
+
+function showMainWindow() {
+  if (isQuitting) return;
+  showWindowOnStart = true;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function setupTray() {
+  if (process.platform !== 'win32') return;
+  try {
+    tray = new Tray(TRAY_ICON);
+    tray.setToolTip('PLauncher');
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: 'Открыть', click: showMainWindow },
+      { label: 'Закрыть полностью', click: () => app.quit() }
+    ]));
+    tray.on('click', showMainWindow);
+  } catch (err) {
+    tray?.destroy();
+    tray = null;
+    console.error('Could not initialize system tray:', err);
+  }
 }
 
 function getAvailableName(dir, name) {
@@ -202,6 +258,23 @@ async function saveSettings(settings) {
   await fsExtra.ensureDir(path.dirname(settingsPath));
   await fsp.writeFile(tmpPath, JSON.stringify(settings, null, 2), 'utf8');
   await fsp.rename(tmpPath, settingsPath);
+}
+
+async function configureLoginItem() {
+  if (process.platform !== 'win32' || !app.isPackaged || !tray ||
+      process.env.PORTABLE_EXECUTABLE_FILE || process.env.PORTABLE_EXECUTABLE_DIR) return;
+
+  const settings = readSettings();
+  if (settings.loginItemConfigured) return;
+  const options = { name: 'PLauncher', path: process.execPath, args: [AUTOSTART_ARG] };
+  try {
+    const registered = app.getLoginItemSettings(options).launchItems?.some(item =>
+      item.name === options.name && item.path.toLowerCase() === options.path.toLowerCase());
+    if (!registered) app.setLoginItemSettings({ ...options, openAtLogin: true });
+    await saveSettings({ ...settings, loginItemConfigured: true });
+  } catch (err) {
+    console.error('Could not configure PLauncher autostart:', err);
+  }
 }
 
 function getConfiguredGamesDir() {
@@ -413,31 +486,40 @@ function installLauncherUpdate() {
 
 setupLauncherUpdater();
 
-async function getRemoteVersions() {
-  const mod = await import(pathToFileURL(path.join(__dirname, 'startup.mjs')).href);
-  if (mod.fetchManifest) return await mod.fetchManifest();
-  if (typeof mod.default === 'function') return await mod.default();
-  return mod.default;
+let remoteVersionsRequest = null;
+
+function getRemoteVersions() {
+  if (!remoteVersionsRequest) {
+    remoteVersionsRequest = import(pathToFileURL(path.join(__dirname, 'startup.mjs')).href)
+      .then(mod => mod.fetchManifest())
+      .finally(() => { remoteVersionsRequest = null; });
+  }
+  return remoteVersionsRequest;
 }
 
 const GAME_CONFIG = {
   Barotrauma: {
+    label: 'Barotrauma',
     dirName: 'Barotrauma',
     exeName: 'Barotrauma.exe'
   },
   LethalCompany: {
+    label: 'Lethal Company',
     dirName: 'LethalCompany',
     exeName: 'Lethal Company.exe'
   },
   SlayTheSpire2: {
+    label: 'Slay the Spire 2',
     dirName: 'Slay The Spire 2',
     exeName: 'SlayTheSpire2.exe'
   },
   CasualtiesUnknown: {
+    label: 'Casualties Unknown',
     dirName: 'Casualties Unknown',
     exeName: 'CasualtiesUnknown.exe'
   },
   RiskOfRain2: {
+    label: 'Risk of Rain 2',
     dirName: 'Risk of Rain 2',
     exeName: 'Risk of Rain 2.exe',
     preserveDirectories: ['FreeTP']
@@ -509,8 +591,6 @@ function findExeCandidates(exeName, expectedGameDir = '') {
 function compareVersions(a, b) {
   const sa = (a === undefined || a === null) ? '0' : String(a).trim();
   const sb = (b === undefined || b === null) ? '0' : String(b).trim();
-  const na = Number(sa), nb = Number(sb);
-  if (!Number.isNaN(na) && !Number.isNaN(nb)) return na - nb;
   const pa = sa.split('.').map(s => Number(s) || 0);
   const pb = sb.split('.').map(s => Number(s) || 0);
   for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
@@ -539,6 +619,90 @@ function isGamePresent(gameName, remoteGame = null) {
     exeName: cfg.exeName,
     candidates
   };
+}
+
+function getGameVersionState(gameName, local, manifest, remoteError = null) {
+  const remoteGame = getRemoteGame(manifest, gameName);
+  const remote = remoteGame?.version ?? null;
+  const downloadUrl = remoteGame?.downloadUrl || null;
+  const manifestCheck = validateRemoteGameConfig(remoteGame);
+  const presence = isGamePresent(gameName, remoteGame);
+  const installed = presence.dirExists;
+  const remoteAvailable = remote !== null;
+
+  return {
+    ok: true,
+    installed,
+    dirExists: installed,
+    exeExists: presence.exeExists,
+    updateAvailable: remoteAvailable && (!installed || compareVersions(remote, local) > 0),
+    local,
+    remote,
+    remoteAvailable,
+    downloadPending: !!manifest && !downloadUrl,
+    remoteSource: manifest?.__source || null,
+    remoteSourceUrl: manifest?.__sourceUrl || null,
+    remoteError,
+    manifestOk: manifestCheck.ok,
+    manifestMissing: manifestCheck.missing,
+    downloadUrl,
+    dirName: presence.dirName || remoteGame?.dirName || null,
+    exeName: presence.exeName || remoteGame?.exeName || null,
+    expectedGameDir: presence.gameDir || null,
+    expectedExePath: presence.exePath || null,
+    candidateGameDir: presence.candidates?.[0]?.gameDir || null,
+    candidateExePath: presence.candidates?.[0]?.exePath || null,
+    candidateDirName: presence.candidates?.[0]?.dirName || null
+  };
+}
+
+function notifyGameUpdate(gameName, state) {
+  if (process.platform !== 'win32' || !Notification.isSupported() ||
+      !state.exeExists || !state.updateAvailable || !state.manifestOk ||
+      compareVersions(state.local, '0') <= 0) return;
+
+  const version = String(state.remote);
+  if (gameNotifications.get(gameName)?.version === version) return;
+  const notification = new Notification({
+    title: `Обновление: ${GAME_CONFIG[gameName].label}`,
+    body: `Установлена версия ${state.local}. Доступна версия ${version}.`,
+    icon: WINDOW_ICON
+  });
+  notification.once('click', showMainWindow);
+  notification.once('failed', (_event, error) => {
+    if (gameNotifications.get(gameName)?.notification === notification) gameNotifications.delete(gameName);
+    console.warn('Game update notification failed:', gameName, error);
+  });
+  gameNotifications.set(gameName, { version, notification });
+  notification.show();
+}
+
+async function checkGameUpdatesInBackground() {
+  if (gameUpdateCheckInProgress || isQuitting || !isGamesDirConfigured()) return;
+  gameUpdateCheckInProgress = true;
+  try {
+    const manifest = await getRemoteVersions();
+    if (isQuitting || !isGamesDirConfigured()) return;
+
+    const versions = readLocalVersions();
+    const states = {};
+    for (const gameName of Object.keys(GAME_CONFIG)) {
+      try {
+        const state = getGameVersionState(gameName, versions[gameName] ?? '0', manifest);
+        states[gameName] = state;
+        notifyGameUpdate(gameName, state);
+      } catch (err) {
+        console.warn('Background version check failed for', gameName, err.message || err);
+      }
+    }
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isLoading()) {
+      mainWindow.webContents.send('game-versions-checked', states);
+    }
+  } catch (err) {
+    console.warn('Background version check failed:', err.message || err);
+  } finally {
+    gameUpdateCheckInProgress = false;
+  }
 }
 
 function readLocalVersions() {
@@ -836,8 +1000,13 @@ async function validateZipArchive(zipPath, targetDir, expectedRootName = null) {
 
 
 
-app.whenReady().then(async () => {
+if (hasSingleInstanceLock) app.whenReady().then(async () => {
     setupFileLogging();
+    if (process.platform === 'win32' && app.isPackaged) {
+      app.setAppUserModelId(require('./package.json').build.appId);
+    }
+    setupTray();
+    await configureLoginItem();
 
     try {
       const cleanupResult = await cleanupTemporaryFiles();
@@ -848,14 +1017,6 @@ app.whenReady().then(async () => {
       console.error('Failed to cleanup temporary files:', e);
     }
 
-    let startupData = {};
-    try {
-      startupData = await getRemoteVersions();
-    } catch (e) {
-      console.error('Failed to fetch versions:', e);
-    }
-
-    ipcMain.handle('get-startup-data', () => startupData);
     ipcMain.handle('get-launcher-update-state', () => getLauncherUpdateState());
     ipcMain.handle('check-launcher-update', () => checkLauncherUpdate());
     ipcMain.handle('download-launcher-update', () => downloadLauncherUpdate());
@@ -923,6 +1084,7 @@ app.whenReady().then(async () => {
       }
 
       const savedDir = await setGamesDir(selectedDir);
+      void checkGameUpdatesInBackground();
       return { ok: true, path: savedDir, configured: true, writeAccess };
     });
     ipcMain.handle('minimize-window', (event) => {
@@ -983,94 +1145,18 @@ app.whenReady().then(async () => {
         candidateExePath: candidate?.exePath || null
       };
     });
-    createWindow();
-    sendLauncherUpdateState();
-    if (app.isPackaged) {
-      setTimeout(() => {
-        checkLauncherUpdate().catch(err => {
-          console.error('Launcher update check failed:', err);
-        });
-      }, LAUNCHER_UPDATE_CHECK_DELAY_MS);
-    }
-
-    app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) {
-        createWindow()
-      }
-    })
-
-
     ipcMain.handle('check-version', async (event, gameName = 'Barotrauma') => {
       try {
-        const localObj = await readLocalVersions();
-        const localRaw = localObj[gameName] ?? '0';
-
-        let remoteGame = null;
-        let remoteRaw = null;
-        let remoteDownloadUrl = null;
-        let remoteSource = null;
-        let remoteSourceUrl = null;
+        const local = readLocalVersions()[gameName] ?? '0';
+        let manifest = null;
         let remoteError = null;
-        let downloadPending = false;
-        let manifestCheck = { ok: false, missing: REQUIRED_REMOTE_GAME_FIELDS.slice() };
         try {
-          const remote = await getRemoteVersions();
-          remoteGame = getRemoteGame(remote, gameName);
-          manifestCheck = validateRemoteGameConfig(remoteGame);
-          remoteRaw = remoteGame?.version ?? null;
-          remoteDownloadUrl = remoteGame?.downloadUrl || null;
-          downloadPending = !remoteGame || !remoteDownloadUrl;
-          remoteSource = remote?.__source || null;
-          remoteSourceUrl = remote?.__sourceUrl || null;
-          console.log('Version checked', {
-            gameName,
-            source: remoteSource,
-            version: remoteRaw,
-            dirName: remoteGame?.dirName || null,
-            exeName: remoteGame?.exeName || null,
-            manifestOk: manifestCheck.ok
-          });
+          manifest = await getRemoteVersions();
         } catch (err) {
           remoteError = String(err);
           console.warn('Remote version unavailable:', err.message || err);
         }
-
-        const presence = isGamePresent(gameName, remoteGame); // { dirExists, exeExists, ... }
-        const installed = presence.dirExists;
-        const remoteAvailable = remoteRaw !== null && remoteRaw !== undefined;
-        let updateAvailable = false;
-        if (!remoteAvailable) {
-          updateAvailable = false;
-        } else if (!installed) {
-          updateAvailable = true;
-        } else {
-          updateAvailable = compareVersions(String(remoteRaw), String(localRaw)) > 0;
-        }
-    
-        return {
-          ok: true,
-          installed,
-          dirExists: presence.dirExists,
-          exeExists: presence.exeExists,
-          updateAvailable,
-          local: localRaw,
-          remote: remoteRaw,
-          remoteAvailable,
-          downloadPending,
-          remoteSource,
-          remoteSourceUrl,
-          remoteError,
-          manifestOk: manifestCheck.ok,
-          manifestMissing: manifestCheck.missing,
-          downloadUrl: remoteDownloadUrl,
-          dirName: presence.dirName || remoteGame?.dirName || null,
-          exeName: presence.exeName || remoteGame?.exeName || null,
-          expectedGameDir: presence.gameDir || null,
-          expectedExePath: presence.exePath || null,
-          candidateGameDir: presence.candidates?.[0]?.gameDir || null,
-          candidateExePath: presence.candidates?.[0]?.exePath || null,
-          candidateDirName: presence.candidates?.[0]?.dirName || null
-        };
+        return getGameVersionState(gameName, local, manifest, remoteError);
       } catch (err) {
         console.error('check-version handler error:', err);
         return { ok: false, error: String(err) };
@@ -1288,6 +1374,21 @@ app.whenReady().then(async () => {
         }
       });
     });
+
+    if (isQuitting) return;
+    createWindow();
+    app.on('activate', () => {
+      if (!mainWindow) createWindow();
+      showMainWindow();
+    });
+
+    void checkGameUpdatesInBackground();
+    gameUpdateTimer = setInterval(checkGameUpdatesInBackground, GAME_UPDATE_INTERVAL_MS);
+    if (app.isPackaged) {
+      setTimeout(() => {
+        if (!isQuitting) void checkLauncherUpdate();
+      }, LAUNCHER_UPDATE_CHECK_DELAY_MS);
+    }
 });
 
 
@@ -1538,6 +1639,8 @@ ipcMain.handle('update-local-version', async (event, gameName, newVersion) => {
 
 
 app.on('before-quit', () => {
+  isQuitting = true;
+  clearInterval(gameUpdateTimer);
   for (const [url, item] of active) {
     try {
       item.cancel();
@@ -1557,8 +1660,13 @@ app.on('before-quit', () => {
   pending.clear();
 });
 
+app.on('will-quit', () => {
+  tray?.destroy();
+  tray = null;
+});
+
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
+  if (!tray && process.platform !== 'darwin') {
     app.quit()
   }
 })

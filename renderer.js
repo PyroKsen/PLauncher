@@ -1,12 +1,4 @@
-﻿window.addEventListener("DOMContentLoaded", async () => {
-  try {
-    await window.api.getStartupData();
-  } catch (err) {
-    console.error(err);
-  }
-});
-
-function normalizeRendererLogArg(arg) {
+﻿function normalizeRendererLogArg(arg) {
   if (arg instanceof Error) {
     return arg.stack || (arg.name + ": " + arg.message);
   }
@@ -46,7 +38,7 @@ function setupRendererLogging() {
 setupRendererLogging();
 
 const mainEl = document.querySelector(".main");
-const gamePlaceholder = document.getElementById("game-placeholder");
+const gameInfoTitle = document.getElementById("game-info-title");
 const status = document.getElementById("version-b");
 const localVersion = document.getElementById("local-version");
 const serverVersion = document.getElementById("server-version");
@@ -69,6 +61,7 @@ const launchBtn = document.getElementById("launch-btn");
 const combinedProgress = document.getElementById("combined-progress");
 const combinedPercent = document.getElementById("combined-percent");
 const downloadStats = document.getElementById("download-stats");
+const downloadEta = document.getElementById("download-eta");
 const gamesFolder = document.getElementById("games-folder");
 const gameButtons = Array.from(document.querySelectorAll("[data-game]"));
 
@@ -131,6 +124,7 @@ let currentPhase = "idle";
 let lastLoggedPercent = -1;
 let lastLoggedReceived = 0;
 let latestDownloadInfo = null;
+let lastDownloadProgressMs = 0;
 let lastPeriodicLogMs = 0;
 let lastSpeedSampleReceived = 0;
 let lastSpeedSampleMs = 0;
@@ -197,12 +191,8 @@ function formatVersion(value) {
 }
 
 function setVersionText(local, remote) {
-  if (localVersion) {
-    localVersion.textContent = "ваша версия: " + formatVersion(local);
-  }
-  if (serverVersion) {
-    serverVersion.textContent = "версия сервера: " + formatVersion(remote);
-  }
+  localVersion.textContent = local ?? "-";
+  serverVersion.textContent = remote ?? "-";
 }
 
 function formatRemoteSource(source) {
@@ -228,14 +218,14 @@ function getExeDiagnosticTitle(info) {
 
 function setSourceText(source) {
   if (serverSource) {
-    serverSource.textContent = "источник версии: " + formatRemoteSource(source);
+    serverSource.textContent = formatRemoteSource(source);
   }
 }
 
 function setGamesFolderText(folderPath) {
   gamesDirPath = folderPath || "";
   if (!gamesFolder) return;
-  gamesFolder.textContent = "папка игр: " + (gamesDirConfigured ? (gamesDirPath || "-") : "не выбрана");
+  gamesFolder.textContent = gamesDirConfigured ? (gamesDirPath || "-") : "не выбрана";
   gamesFolder.title = gamesDirPath || "";
 }
 
@@ -339,13 +329,47 @@ function formatMegabytesOrDash(bytes) {
   return typeof bytes === "number" ? formatMegabytes(bytes) : "-";
 }
 
-function resetDownloadStats() {
+function resetDownloadSpeed() {
   lastSpeedSampleReceived = 0;
   lastSpeedSampleMs = 0;
   currentDownloadSpeedBps = 0;
+}
+
+function resetDownloadStats() {
+  resetDownloadSpeed();
+  lastDownloadProgressMs = 0;
+  latestDownloadInfo = null;
   if (downloadStats) {
     downloadStats.textContent = "";
   }
+  downloadEta.textContent = "";
+}
+
+function formatRemainingTime(seconds) {
+  const roundedSeconds = Math.ceil(seconds);
+  if (roundedSeconds < 60) return roundedSeconds + " с";
+  const minutes = Math.ceil(roundedSeconds / 60);
+  if (minutes < 60) return minutes + " мин";
+  return Math.floor(minutes / 60) + " ч " + (minutes % 60) + " мин";
+}
+
+function renderDownloadStats(received, total) {
+  const loadedText = total > 0
+    ? formatMegabytes(received) + " / " + formatMegabytes(total) + " MB"
+    : formatMegabytes(received) + " MB";
+  downloadStats.textContent = loadedText + " · " + formatMegabytes(currentDownloadSpeedBps) + " MB/s";
+
+  const remaining = total > 0 && currentDownloadSpeedBps > 0
+    ? Math.max(0, total - received) / currentDownloadSpeedBps
+    : null;
+  downloadEta.textContent = isDownloadPaused ? "На паузе"
+    : "Осталось: " + (remaining === null ? "-" : formatRemainingTime(remaining));
+}
+
+function resetDownloadEstimate(info = latestDownloadInfo) {
+  resetDownloadSpeed();
+  if (info) renderDownloadStats(Number(info.received) || 0, Number(info.total) || 0);
+  else downloadEta.textContent = isDownloadPaused ? "На паузе" : "Осталось: -";
 }
 
 function updateDownloadStats(info) {
@@ -355,6 +379,11 @@ function updateDownloadStats(info) {
   const received = Number(info.received) || 0;
   const total = Number(info.total) || 0;
 
+  if (isDownloadPaused) {
+    resetDownloadEstimate(info);
+    return;
+  }
+
   if (!lastSpeedSampleMs || received < lastSpeedSampleReceived) {
     lastSpeedSampleMs = now;
     lastSpeedSampleReceived = received;
@@ -362,23 +391,23 @@ function updateDownloadStats(info) {
     const elapsedMs = now - lastSpeedSampleMs;
     const deltaBytes = received - lastSpeedSampleReceived;
     if (elapsedMs >= 250 && deltaBytes >= 0) {
-      currentDownloadSpeedBps = deltaBytes / (elapsedMs / 1000);
+      const sampleSpeed = deltaBytes / (elapsedMs / 1000);
+      currentDownloadSpeedBps = currentDownloadSpeedBps
+        ? currentDownloadSpeedBps * .7 + sampleSpeed * .3
+        : sampleSpeed;
       lastSpeedSampleMs = now;
       lastSpeedSampleReceived = received;
     }
   }
 
-  const loadedText = total > 0
-    ? formatMegabytes(received) + " / " + formatMegabytes(total) + " MB"
-    : formatMegabytes(received) + " MB";
-  downloadStats.textContent = loadedText + " · " + formatMegabytes(currentDownloadSpeedBps) + " MB/s";
+  renderDownloadStats(received, total);
 }
 
 async function pauseActiveDownload(statusText) {
   if (!downloadInProgress || currentPhase !== "download" || !activeDownloadUrl) return;
 
   isDownloadPaused = true;
-  currentDownloadSpeedBps = 0;
+  resetDownloadEstimate();
   if (statusText) setStatusText(statusText);
 
   try {
@@ -387,6 +416,7 @@ async function pauseActiveDownload(statusText) {
       console.warn("auto pause failed", res);
     } else if (typeof res.paused === "boolean") {
       isDownloadPaused = res.paused;
+      resetDownloadEstimate();
     }
   } catch (err) {
     console.warn("auto pause ipc error:", err);
@@ -537,6 +567,7 @@ function setCurrentGame(gameName, options = {}) {
   }
 
   currentGame = gameName;
+  gameInfoTitle.textContent = GAMES[gameName].label;
   resetDownloadStats();
   gameButtons.forEach(btn => {
     btn.classList.toggle("sidebar__button--active", btn.dataset.game === gameName);
@@ -548,10 +579,6 @@ function setCurrentGame(gameName, options = {}) {
     mainEl.style.backgroundSize = GAMES[gameName].backgroundSize || "";
     mainEl.style.backgroundPosition = GAMES[gameName].backgroundSize ? "center" : "";
     mainEl.classList.toggle("main--no-background", !background);
-    if (gamePlaceholder) {
-      gamePlaceholder.textContent = GAMES[gameName].label;
-      gamePlaceholder.hidden = !!background;
-    }
   }
 
   if (shouldRefresh) {
@@ -684,6 +711,7 @@ window.addEventListener("online", () => {
 setInterval(() => {
   if (!downloadInProgress || currentPhase !== "download" || !latestDownloadInfo) return;
   const now = Date.now();
+  if (currentDownloadSpeedBps > 0 && now - lastDownloadProgressMs >= 5000) resetDownloadEstimate();
   if (now - lastPeriodicLogMs < 950) return;
   lastPeriodicLogMs = now;
   const received = latestDownloadInfo.received;
@@ -705,6 +733,7 @@ downloadBtn.addEventListener("click", async () => {
         console.warn("download-control failed", res);
       } else {
         isDownloadPaused = typeof res.paused === "boolean" ? res.paused : action === "pause";
+        resetDownloadEstimate();
         setStatusText(isDownloadPaused ? "загрузка на паузе" : "загрузка продолжается");
       }
     } finally {
@@ -752,11 +781,13 @@ downloadBtn.addEventListener("click", async () => {
     currentPhase = "download";
     activeDownloadGame = currentGame;
     resetDownloadStats();
+    downloadEta.textContent = "Осталось: -";
     updatePlayButton();
     const res = await window.api.startDownload(downloadUrl, currentGame, presence.remote, presence.dirName);
     activeDownloadUrl = downloadUrl;
     if (res && res.canceled) {
       downloadInProgress = false;
+      downloadEta.textContent = "";
       activeDownloadUrl = null;
       activeDownloadGame = null;
       if (res.error === "remote_version_unavailable") {
@@ -782,6 +813,7 @@ downloadBtn.addEventListener("click", async () => {
     }
   } catch (err) {
     downloadInProgress = false;
+    downloadEta.textContent = "";
     activeDownloadUrl = null;
     activeDownloadGame = null;
     console.error("Failed to start download:", err);
@@ -879,12 +911,14 @@ window.api.onLauncherUpdateState(state => {
 
 window.api.onDownloadProgress(info => {
   currentPhase = "download";
+  if (info.received !== latestDownloadInfo?.received) lastDownloadProgressMs = Date.now();
   latestDownloadInfo = info;
   downloadInProgress = true;
   isDownloadPaused = !!info.paused || info.state === "interrupted";
   if (isDownloadPaused) {
-    currentDownloadSpeedBps = 0;
-    setStatusText(info.canResume ? "соединение прервано, загрузка на паузе" : "загрузка прервана");
+    setStatusText(info.state === "interrupted"
+      ? (info.canResume ? "соединение прервано, загрузка на паузе" : "загрузка прервана")
+      : "загрузка на паузе");
   }
   downloadPercent = info.total > 0 ? Math.round((info.received / info.total) * 100) : 0;
   updateDownloadStats(info);
@@ -904,6 +938,7 @@ window.api.onDownloadProgress(info => {
 window.api.onDownloadDone(info => {
   activeDownloadUrl = null;
   isDownloadPaused = false;
+  downloadEta.textContent = "";
 
   if (info.state !== "completed") {
     currentPhase = "error";
@@ -959,6 +994,7 @@ window.api.onExtractError(info => {
   currentPhase = "error";
   downloadInProgress = false;
   activeDownloadGame = null;
+  downloadEta.textContent = "";
   if (downloadStats) {
     downloadStats.textContent = "ошибка распаковки";
   }
@@ -989,6 +1025,18 @@ window.api.onGameError(info => {
   console.error("game error:", info.error || info.message || JSON.stringify(info));
 });
 
+function applyVersionState(gameName, res) {
+  setPresence(gameName, !!res.installed, !!res.exeExists, !!res.updateAvailable, res.local, res.remote, !!res.remoteAvailable, res.downloadUrl || "", res.remoteSource || null, res);
+}
+
+window.api.onGameVersionsChecked(states => {
+  if (!gamesDirConfigured || downloadInProgress || versionCheckInProgress || actionLock) return;
+  for (const gameName of Object.keys(GAMES)) {
+    if (states[gameName]?.ok) applyVersionState(gameName, states[gameName]);
+  }
+  if (states[currentGame]?.ok) renderCurrentGameStatus();
+});
+
 async function refreshVersionState(gameName, options = {}) {
   const showLoading = options.showLoading !== false;
 
@@ -1009,18 +1057,7 @@ async function refreshVersionState(gameName, options = {}) {
       return;
     }
 
-    setPresence(gameName, !!res.installed, !!res.exeExists, !!res.updateAvailable, res.local, res.remote, !!res.remoteAvailable, res.downloadUrl || "", res.remoteSource || null, {
-      manifestOk: res.manifestOk,
-      downloadPending: res.downloadPending,
-      manifestMissing: res.manifestMissing,
-      dirName: res.dirName,
-      exeName: res.exeName,
-      expectedGameDir: res.expectedGameDir,
-      expectedExePath: res.expectedExePath,
-      candidateGameDir: res.candidateGameDir,
-      candidateExePath: res.candidateExePath,
-      candidateDirName: res.candidateDirName
-    });
+    applyVersionState(gameName, res);
     if (gameName === currentGame) {
       renderCurrentGameStatus();
     }

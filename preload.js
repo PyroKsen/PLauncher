@@ -1,7 +1,6 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('api', {
-  getStartupData: () => ipcRenderer.invoke('get-startup-data'),
   getLauncherUpdateState: () => ipcRenderer.invoke('get-launcher-update-state'),
   checkLauncherUpdate: () => ipcRenderer.invoke('check-launcher-update'),
   downloadLauncherUpdate: () => ipcRenderer.invoke('download-launcher-update'),
@@ -30,5 +29,6 @@ contextBridge.exposeInMainWorld('api', {
   onGameExited: (cb) => ipcRenderer.on('game-exited', (e, d) => cb(d)),
   onGameError: (cb) => ipcRenderer.on('game-error', (e, d) => cb(d)),
   checkVersion: (gameName) => ipcRenderer.invoke('check-version', gameName),
+  onGameVersionsChecked: (cb) => ipcRenderer.on('game-versions-checked', (_event, states) => cb(states)),
   updateLocalVersion: (gameName, newVersion) => ipcRenderer.invoke('update-local-version', gameName, newVersion),
 });

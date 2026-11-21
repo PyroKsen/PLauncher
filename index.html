@@ -18,7 +18,7 @@
     <main class="main">
       <div class="window-controls">
         <button id="minimize-window-btn" class="window-control no-drag" type="button" aria-label="Свернуть">-</button>
-        <button id="close-window-btn" class="window-control window-control--close no-drag" type="button" aria-label="Закрыть">x</button>
+        <button id="close-window-btn" class="window-control window-control--close no-drag" type="button" aria-label="Скрыть в трей" title="Скрыть в трей">x</button>
       </div>
       <div class="first-run-overlay first-run-overlay--hidden" id="first-run-overlay">
         <section class="first-run-dialog no-drag">
@@ -41,34 +41,33 @@
           <div class="launcher-update__status" id="launcher-update-status">проверка обновления...</div>
           <button class="launcher-update__button no-drag" id="launcher-update-btn" type="button">Проверить лаунчер</button>
           <button class="launcher-update__button no-drag" id="open-logs-btn" type="button">Открыть логи</button>
+          <button class="launcher-update__button no-drag" id="games-dir-btn" type="button">Папка установки игр</button>
         </div>
       </aside>
       <div class="base">
         <div class="base__top">
-          <div class="base__top-left">
-            <h2 class="game-placeholder" id="game-placeholder" hidden></h2>
-          </div>
-          <div class="base__top-right">
-            <ul class="spisok">
-              <li class="spisok__element" id="version-b"></li>
-              <li class="spisok__element" id="local-version"></li>
-              <li class="spisok__element" id="server-version"></li>
-              <li class="spisok__element" id="server-source"></li>
-              <li class="spisok__element spisok__element--path" id="games-folder"></li>
-            </ul>
-          </div>
+          <section class="game-info" aria-labelledby="game-info-title">
+            <h2 class="game-info__title" id="game-info-title">Barotrauma</h2>
+            <p class="game-info__status" id="version-b" role="status"></p>
+            <dl class="game-info__details">
+              <dt>Ваша версия</dt><dd id="local-version">-</dd>
+              <dt>Версия сервера</dt><dd id="server-version">-</dd>
+              <dt>Источник</dt><dd id="server-source">-</dd>
+              <dt>Папка игр</dt><dd class="game-info__path" id="games-folder">-</dd>
+            </dl>
+          </section>
         </div>
         <div class="base__bottom" id="progress-section">
           <div class="progress-strip">
             <progress id="combined-progress" value="0" max="100"></progress>
             <span id="combined-percent">0%</span>
             <span id="download-stats" class="download-stats"></span>
+            <span id="download-eta" class="download-stats download-eta"></span>
           </div>
           <div class="action-bar">
             <button id="check-btn" class="control-button control-button--wide no-drag">Проверить версию игры</button>
             <button id="download-btn" class="control-button no-drag">Скачать</button>
             <button id="cancel-btn" class="control-button control-button--danger no-drag" disabled>Отмена</button>
-            <button id="games-dir-btn" class="control-button control-button--wide no-drag">Папка установки игр</button>
             <button id="open-folder-btn" class="control-button control-button--wide no-drag" disabled>Открыть папку игры</button>
             <button id="launch-btn" class="control-button control-button--primary no-drag">Играть</button>
           </div>
