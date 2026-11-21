@@ -552,12 +552,27 @@ function validateRemoteGameConfig(remoteGame) {
 
   const missing = REQUIRED_REMOTE_GAME_FIELDS.filter(field => {
     const value = remoteGame[field];
-    return value === null || value === undefined || String(value).trim() === '';
+    if (field === 'downloadUrl') {
+      return typeof value !== 'string' || !URL.canParse(value) || !['https:', 'http:'].includes(new URL(value).protocol);
+    }
+    if (field === 'version') return !['string', 'number'].includes(typeof value) || String(value).trim() === '';
+    return typeof value !== 'string' || !value.trim();
   });
 
   return {
     ok: missing.length === 0,
     missing
+  };
+}
+
+function getBackupGame(remoteGame) {
+  const backup = remoteGame?.backup;
+  if (!backup || typeof backup !== 'object') return null;
+  return {
+    version: backup.version,
+    downloadUrl: backup.downloadUrl,
+    dirName: remoteGame.dirName,
+    exeName: remoteGame.exeName
   };
 }
 
@@ -627,16 +642,22 @@ function getGameVersionState(gameName, local, manifest, remoteError = null) {
   const remote = remoteGame?.version ?? null;
   const downloadUrl = remoteGame?.downloadUrl || null;
   const manifestCheck = validateRemoteGameConfig(remoteGame);
+  const backup = getBackupGame(remoteGame);
+  const backupAvailable = validateRemoteGameConfig(backup).ok;
   const presence = isGamePresent(gameName, remoteGame);
   const installed = presence.dirExists;
   const remoteAvailable = remote !== null;
+  const needsInstall = !installed || !presence.exeExists;
 
   return {
     ok: true,
     installed,
     dirExists: installed,
     exeExists: presence.exeExists,
-    updateAvailable: remoteAvailable && (!installed || compareVersions(remote, local) > 0),
+    updateAvailable: manifestCheck.ok && (needsInstall || compareVersions(remote, local) > 0),
+    backupVersion: backup?.version ?? null,
+    backupAvailable,
+    backupUpdateAvailable: backupAvailable && (needsInstall || compareVersions(backup.version, local) > 0),
     local,
     remote,
     remoteAvailable,
@@ -646,7 +667,6 @@ function getGameVersionState(gameName, local, manifest, remoteError = null) {
     remoteError,
     manifestOk: manifestCheck.ok,
     manifestMissing: manifestCheck.missing,
-    downloadUrl,
     dirName: presence.dirName || remoteGame?.dirName || null,
     exeName: presence.exeName || remoteGame?.exeName || null,
     expectedGameDir: presence.gameDir || null,
@@ -659,10 +679,12 @@ function getGameVersionState(gameName, local, manifest, remoteError = null) {
 
 function notifyGameUpdate(gameName, state) {
   if (process.platform !== 'win32' || !Notification.isSupported() ||
-      !state.exeExists || !state.updateAvailable || !state.manifestOk ||
+      !state.exeExists || (!state.updateAvailable && !state.backupUpdateAvailable) ||
       compareVersions(state.local, '0') <= 0) return;
 
-  const version = String(state.remote);
+  const useBackup = state.backupUpdateAvailable &&
+    (!state.updateAvailable || compareVersions(state.backupVersion, state.remote) > 0);
+  const version = String(useBackup ? state.backupVersion : state.remote);
   if (gameNotifications.get(gameName)?.version === version) return;
   const notification = new Notification({
     title: `Обновление: ${GAME_CONFIG[gameName].label}`,
@@ -1405,51 +1427,35 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
 
 
 
-ipcMain.handle('start-download', async (event, url, gameName = null, remoteVersion = null, remoteDirName = null) => {
+ipcMain.handle('start-download', async (event, gameName, source = 'primary') => {
+  if (!Object.hasOwn(GAME_CONFIG, gameName) || !['primary', 'backup'].includes(source)) {
+    return { canceled: true, error: 'invalid_download_source' };
+  }
   const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win) return { canceled: true, error: 'invalid_download_source' };
   const gamesDir = getGamesDir();
 
   if (pending.size > 0 || active.size > 0) {
     return { canceled: true, error: 'download_already_running' };
   }
 
-  let downloadUrl = url;
-  let version = remoteVersion;
-  let dirName = remoteDirName;
-  let exeName = null;
   let remoteGame = null;
-  if (gameName) {
-    try {
-      const remote = await getRemoteVersions();
-      remoteGame = getRemoteGame(remote, gameName);
-      const manifestCheck = validateRemoteGameConfig(remoteGame);
-      if (!manifestCheck.ok) {
-        return { canceled: true, error: 'manifest_invalid', missing: manifestCheck.missing };
-      }
-      if (!downloadUrl) downloadUrl = remoteGame?.downloadUrl || '';
-      if (version === null || version === undefined || version === '') version = remoteGame?.version;
-      if (!dirName) dirName = remoteGame?.dirName || '';
-      exeName = remoteGame?.exeName || null;
-    } catch (err) {
-      console.warn('Failed to resolve remote game data for download:', err.message || err);
-    }
-
-    const cfg = getGameConfig(gameName, remoteGame);
-    if (!dirName) dirName = cfg?.dirName || null;
-    if (!exeName) exeName = cfg?.exeName || null;
+  try {
+    remoteGame = getRemoteGame(await getRemoteVersions(), gameName);
+  } catch (err) {
+    console.warn('Failed to resolve remote game data for download:', err.message || err);
+    return { canceled: true, error: 'remote_version_unavailable' };
   }
 
-  if (!downloadUrl) {
-    return { canceled: true, error: 'download_url_unavailable' };
+  const archive = source === 'backup' ? getBackupGame(remoteGame) : remoteGame;
+  const manifestCheck = validateRemoteGameConfig(archive);
+  if (!manifestCheck.ok) {
+    return { canceled: true, error: source === 'backup' ? 'backup_unavailable' : 'manifest_invalid', missing: manifestCheck.missing };
   }
 
-  if (gameName && (!dirName || !exeName || version === null || version === undefined || version === '')) {
-    const missing = [];
-    if (version === null || version === undefined || version === '') missing.push('version');
-    if (!downloadUrl) missing.push('downloadUrl');
-    if (!dirName) missing.push('dirName');
-    if (!exeName) missing.push('exeName');
-    return { canceled: true, error: 'manifest_invalid', missing };
+  const { downloadUrl, version, dirName, exeName } = archive;
+  if (isGamePresent(gameName, remoteGame).exeExists && compareVersions(version, readLocalVersions()[gameName]) <= 0) {
+    return { canceled: true, error: 'no_game_update' };
   }
 
   const writeAccess = await checkGamesWriteAccess();
@@ -1462,18 +1468,19 @@ ipcMain.handle('start-download', async (event, url, gameName = null, remoteVersi
   const safeName = getAvailableName(targetDir, filename);
   const savePath = path.join(targetDir, safeName);
 
-  if (gameName && (version === null || version === undefined || version === '')) {
-    return { canceled: true, error: 'remote_version_unavailable' };
-  }
-
   const spaceCheck = await checkFreeSpaceForDownload(targetDir, downloadUrl);
   if (!spaceCheck.ok) {
     return { canceled: true, error: 'not_enough_space', ...spaceCheck };
   }
 
+  if (pending.size > 0 || active.size > 0) {
+    return { canceled: true, error: 'download_already_running' };
+  }
+
   pending.set(downloadUrl, { url: downloadUrl, savePath, gameName, version, dirName, exeName, targetDir });
   console.log('Download queued', {
     gameName,
+    source,
     version,
     dirName,
     exeName,
@@ -1482,12 +1489,13 @@ ipcMain.handle('start-download', async (event, url, gameName = null, remoteVersi
     size: spaceCheck.downloadBytes
   });
 
-  const bw = BrowserWindow.fromWebContents(event.sender);
-  if (!bw) throw new Error('No browser window available for download');
-
-  bw.webContents.downloadURL(downloadUrl);
-
-  return { canceled: false, path: savePath, spaceCheck };
+  try {
+    win.webContents.downloadURL(downloadUrl);
+  } catch (err) {
+    pending.delete(downloadUrl);
+    throw err;
+  }
+  return { canceled: false, url: downloadUrl, path: savePath, spaceCheck };
 });
 
 // pause/resume/cancel

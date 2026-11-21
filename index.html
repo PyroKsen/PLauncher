@@ -51,7 +51,8 @@
             <p class="game-info__status" id="version-b" role="status"></p>
             <dl class="game-info__details">
               <dt>Ваша версия</dt><dd id="local-version">-</dd>
-              <dt>Версия сервера</dt><dd id="server-version">-</dd>
+              <dt>Основная версия</dt><dd id="server-version">-</dd>
+              <dt>Резервная версия</dt><dd id="backup-version">-</dd>
               <dt>Источник</dt><dd id="server-source">-</dd>
               <dt>Папка игр</dt><dd class="game-info__path" id="games-folder">-</dd>
             </dl>
@@ -67,6 +68,7 @@
           <div class="action-bar">
             <button id="check-btn" class="control-button control-button--wide no-drag">Проверить версию игры</button>
             <button id="download-btn" class="control-button no-drag">Скачать</button>
+            <button id="backup-download-btn" class="control-button no-drag" type="button" disabled>Скачать с резервной ссылки</button>
             <button id="cancel-btn" class="control-button control-button--danger no-drag" disabled>Отмена</button>
             <button id="open-folder-btn" class="control-button control-button--wide no-drag" disabled>Открыть папку игры</button>
             <button id="launch-btn" class="control-button control-button--primary no-drag">Играть</button>

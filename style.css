@@ -247,7 +247,7 @@ h1 {
 
 .game-info__details {
     display: grid;
-    grid-template-columns: 110px minmax(0, 1fr);
+    grid-template-columns: 124px minmax(0, 1fr);
     gap: 5px 10px;
     margin-top: 10px;
     padding-top: 9px;
@@ -344,7 +344,7 @@ h1 {
 .action-bar {
     -webkit-app-region: no-drag;
     display: grid;
-    grid-template-columns: minmax(0, 1.35fr) minmax(0, .92fr) minmax(0, .78fr) minmax(0, 1.25fr) minmax(0, .95fr);
+    grid-template-columns: minmax(0, 1.35fr) minmax(0, .92fr) minmax(0, 1.65fr) minmax(0, .78fr) minmax(0, 1.25fr) minmax(0, .95fr);
     gap: 8px;
     width: 100%;
     min-width: 0;

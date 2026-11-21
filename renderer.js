@@ -42,6 +42,7 @@ const gameInfoTitle = document.getElementById("game-info-title");
 const status = document.getElementById("version-b");
 const localVersion = document.getElementById("local-version");
 const serverVersion = document.getElementById("server-version");
+const backupVersion = document.getElementById("backup-version");
 const serverSource = document.getElementById("server-source");
 const launcherVersion = document.getElementById("launcher-version");
 const launcherUpdateStatus = document.getElementById("launcher-update-status");
@@ -54,6 +55,7 @@ const minimizeWindowBtn = document.getElementById("minimize-window-btn");
 const closeWindowBtn = document.getElementById("close-window-btn");
 const checkBtn = document.getElementById("check-btn");
 const downloadBtn = document.getElementById("download-btn");
+const backupDownloadBtn = document.getElementById("backup-download-btn");
 const cancelBtn = document.getElementById("cancel-btn");
 const gamesDirBtn = document.getElementById("games-dir-btn");
 const openFolderBtn = document.getElementById("open-folder-btn");
@@ -107,6 +109,7 @@ const BUTTON_TEXT = {
 let currentGame = "Barotrauma";
 let activeDownloadUrl = null;
 let activeDownloadGame = null;
+let activeDownloadSource = null;
 let isDownloadPaused = false;
 let downloadInProgress = false;
 let gameRunning = false;
@@ -141,12 +144,12 @@ function getPresence(gameName) {
     downloadPending: false,
     local: null,
     remote: null,
-    downloadUrl: "",
+    backupVersion: null,
+    backupAvailable: false,
+    backupUpdateAvailable: false,
     remoteSource: null,
     manifestOk: true,
     manifestMissing: [],
-    dirName: null,
-    exeName: null,
     expectedGameDir: null,
     expectedExePath: null,
     candidateGameDir: null,
@@ -155,21 +158,21 @@ function getPresence(gameName) {
   };
 }
 
-function setPresence(gameName, installed, exeExists, updateAvailable = false, local = null, remote = null, remoteAvailable = false, downloadUrl = "", remoteSource = null, details = {}) {
+function applyVersionState(gameName, details) {
   gamePresence[gameName] = {
-    installed,
-    exeExists,
-    updateAvailable,
-    local,
-    remote,
-    remoteAvailable,
+    installed: !!details.installed,
+    exeExists: !!details.exeExists,
+    updateAvailable: !!details.updateAvailable,
+    local: details.local ?? null,
+    remote: details.remote ?? null,
+    backupVersion: details.backupVersion ?? null,
+    backupAvailable: !!details.backupAvailable,
+    backupUpdateAvailable: !!details.backupUpdateAvailable,
+    remoteAvailable: !!details.remoteAvailable,
     downloadPending: !!details.downloadPending,
-    downloadUrl,
-    remoteSource,
+    remoteSource: details.remoteSource || null,
     manifestOk: details.manifestOk === undefined ? true : !!details.manifestOk,
     manifestMissing: Array.isArray(details.manifestMissing) ? details.manifestMissing : [],
-    dirName: details.dirName || null,
-    exeName: details.exeName || null,
     expectedGameDir: details.expectedGameDir || null,
     expectedExePath: details.expectedExePath || null,
     candidateGameDir: details.candidateGameDir || null,
@@ -190,9 +193,10 @@ function formatVersion(value) {
   return "\"" + String(value) + "\"";
 }
 
-function setVersionText(local, remote) {
+function setVersionText(local, remote, backup = null) {
   localVersion.textContent = local ?? "-";
   serverVersion.textContent = remote ?? "-";
+  backupVersion.textContent = backup ?? "-";
 }
 
 function formatRemoteSource(source) {
@@ -289,18 +293,18 @@ function renderLauncherUpdateState(state) {
 
 function renderCurrentGameStatus() {
   const presence = getPresence(currentGame);
-  setVersionText(presence.local, presence.remote);
+  setVersionText(presence.local, presence.remote, presence.backupVersion);
   setSourceText(presence.remoteSource);
 
   if (!gamesDirConfigured) {
     setStatusText("выберите папку установки игр");
   } else if (!launcherWriteAccess.ok) {
     setStatusText(WRITE_PERMISSION_MESSAGE);
-  } else if (presence.downloadPending) {
+  } else if (presence.downloadPending && !presence.backupAvailable) {
     setStatusText(presence.exeExists ? "игра установлена, скачивание пока недоступно" : "скачивание пока недоступно");
-  } else if (!presence.remoteAvailable) {
+  } else if (!presence.remoteAvailable && !presence.backupAvailable) {
     setStatusText("версия сервера недоступна");
-  } else if (presence.manifestOk === false) {
+  } else if (presence.manifestOk === false && !presence.backupAvailable) {
     setStatusText("данные сервера неполные: " + formatMissingManifestFields(presence.manifestMissing));
   } else if (!presence.exeExists && presence.candidateExePath) {
     setStatusText("папка игры не совпадает с сервером", getExeDiagnosticTitle(presence));
@@ -308,6 +312,8 @@ function renderCurrentGameStatus() {
     setStatusText(presence.installed ? "файл запуска не найден" : "игра не установлена", getExeDiagnosticTitle(presence));
   } else if (presence.updateAvailable) {
     setStatusText("доступно обновление");
+  } else if (presence.backupUpdateAvailable) {
+    setStatusText("доступно обновление с резервной ссылки");
   } else {
     setStatusText("игра установлена");
   }
@@ -425,59 +431,23 @@ async function pauseActiveDownload(statusText) {
   }
 }
 
-function updateDownloadButton() {
-  if (downloadInProgress) {
-    if (currentPhase === "extract") {
-      downloadBtn.textContent = BUTTON_TEXT.extract;
-      downloadBtn.disabled = true;
-      return;
-    }
-    downloadBtn.textContent = isDownloadPaused ? BUTTON_TEXT.resume : BUTTON_TEXT.pause;
-    downloadBtn.disabled = false;
-    return;
-  }
-
+function updateDownloadButtons() {
   const presence = getPresence(currentGame);
-  if (!gamesDirConfigured) {
-    downloadBtn.textContent = BUTTON_TEXT.load;
-    downloadBtn.disabled = true;
-    return;
-  }
+  const installed = presence.installed && presence.exeExists;
+  const blocked = !gamesDirConfigured || !launcherWriteAccess.ok || downloadInProgress || gameRunning || versionCheckInProgress;
+  downloadBtn.textContent = installed ? (presence.updateAvailable ? BUTTON_TEXT.update : BUTTON_TEXT.loaded) : BUTTON_TEXT.load;
+  downloadBtn.disabled = blocked || !presence.updateAvailable;
+  backupDownloadBtn.textContent = installed ? "Обновить с резервной ссылки" : "Скачать с резервной ссылки";
+  backupDownloadBtn.disabled = blocked || !presence.backupUpdateAvailable;
+  backupDownloadBtn.title = !presence.backupAvailable ? "Резервная ссылка недоступна"
+    : installed && !presence.backupUpdateAvailable ? "Резервная версия не новее установленной" : "";
 
-  if (!launcherWriteAccess.ok) {
-    downloadBtn.textContent = presence.installed && presence.exeExists
-      ? (presence.updateAvailable ? BUTTON_TEXT.update : BUTTON_TEXT.loaded)
-      : BUTTON_TEXT.load;
-    downloadBtn.disabled = true;
-    return;
+  if (downloadInProgress && activeDownloadSource) {
+    const activeButton = activeDownloadSource === "backup" ? backupDownloadBtn : downloadBtn;
+    activeButton.textContent = currentPhase === "extract" ? BUTTON_TEXT.extract
+      : isDownloadPaused ? BUTTON_TEXT.resume : BUTTON_TEXT.pause;
+    activeButton.disabled = !activeDownloadUrl || currentPhase !== "download";
   }
-
-  if (!presence.remoteAvailable) {
-    downloadBtn.textContent = presence.installed && presence.exeExists ? BUTTON_TEXT.loaded : BUTTON_TEXT.load;
-    downloadBtn.disabled = true;
-    return;
-  }
-
-  if (presence.manifestOk === false) {
-    downloadBtn.textContent = presence.installed && presence.exeExists ? BUTTON_TEXT.update : BUTTON_TEXT.load;
-    downloadBtn.disabled = true;
-    return;
-  }
-
-  if (!presence.downloadUrl) {
-    downloadBtn.textContent = presence.installed && presence.exeExists ? BUTTON_TEXT.update : BUTTON_TEXT.load;
-    downloadBtn.disabled = true;
-    return;
-  }
-
-  if (presence.installed && presence.exeExists) {
-    downloadBtn.textContent = presence.updateAvailable ? BUTTON_TEXT.update : BUTTON_TEXT.loaded;
-    downloadBtn.disabled = !presence.updateAvailable;
-    return;
-  }
-
-  downloadBtn.textContent = BUTTON_TEXT.load;
-  downloadBtn.disabled = false;
 }
 
 function updateCancelButton() {
@@ -497,7 +467,7 @@ function updateFolderButton() {
 }
 
 function updatePlayButton() {
-  updateDownloadButton();
+  updateDownloadButtons();
   updateCancelButton();
   updateCheckButton();
   updateFolderButton();
@@ -720,9 +690,10 @@ setInterval(() => {
   console.log("download", pct + "%", received, "/", total || "?");
 }, 1000);
 
-downloadBtn.addEventListener("click", async () => {
+async function handleDownloadClick(source) {
   if (actionLock) return;
   if (downloadInProgress) {
+    if (source !== activeDownloadSource) return;
     if (!activeDownloadUrl || currentPhase !== "download") return;
     if (activeDownloadGame && activeDownloadGame !== currentGame) return;
     actionLock = true;
@@ -743,36 +714,8 @@ downloadBtn.addEventListener("click", async () => {
     return;
   }
 
-  const presence = getPresence(currentGame);
-  if (!gamesDirConfigured) {
-    setStatusText("выберите папку установки игр");
-    setFirstRunVisible(true);
-    updatePlayButton();
-    return;
-  }
-
-  if (!launcherWriteAccess.ok) {
-    setStatusText(WRITE_PERMISSION_MESSAGE);
-    updatePlayButton();
-    return;
-  }
-
-  if (!presence.remoteAvailable) {
-    setStatusText("версия сервера недоступна");
-    updatePlayButton();
-    return;
-  }
-  if (presence.manifestOk === false) {
-    setStatusText("данные сервера неполные: " + formatMissingManifestFields(presence.manifestMissing));
-    updatePlayButton();
-    return;
-  }
-  const downloadUrl = presence.downloadUrl;
-  if (!downloadUrl) {
-    setStatusText("ссылка для скачивания не указана");
-    updatePlayButton();
-    return;
-  }
+  const button = source === "backup" ? backupDownloadBtn : downloadBtn;
+  if (button.disabled) return;
 
   actionLock = true;
   try {
@@ -780,20 +723,30 @@ downloadBtn.addEventListener("click", async () => {
     isDownloadPaused = false;
     currentPhase = "download";
     activeDownloadGame = currentGame;
+    activeDownloadSource = source;
+    activeDownloadUrl = null;
+    downloadPercent = 0;
+    extractPercent = 0;
     resetDownloadStats();
+    updateCombinedProgress();
     downloadEta.textContent = "Осталось: -";
+    setStatusText(source === "backup" ? "загрузка с резервной ссылки" : "загрузка с основной ссылки");
     updatePlayButton();
-    const res = await window.api.startDownload(downloadUrl, currentGame, presence.remote, presence.dirName);
-    activeDownloadUrl = downloadUrl;
+    const res = await window.api.startDownload(currentGame, source);
     if (res && res.canceled) {
       downloadInProgress = false;
       downloadEta.textContent = "";
       activeDownloadUrl = null;
       activeDownloadGame = null;
+      activeDownloadSource = null;
       if (res.error === "remote_version_unavailable") {
         setStatusText("версия сервера недоступна");
-      } else if (res.error === "download_url_unavailable") {
-        setStatusText("ссылка для скачивания не указана");
+      } else if (res.error === "backup_unavailable") {
+        await refreshVersionState(currentGame);
+        setStatusText("резервная ссылка недоступна");
+      } else if (res.error === "no_game_update") {
+        await refreshVersionState(currentGame);
+        setStatusText("выбранная версия не новее установленной");
       } else if (res.error === "download_already_running") {
         setStatusText("уже идет загрузка");
       } else if (res.error === "manifest_invalid") {
@@ -806,9 +759,12 @@ downloadBtn.addEventListener("click", async () => {
       } else if (res.error === "games_dir_not_writable" || res.error === "launcher_dir_not_writable") {
         launcherWriteAccess = res.writeAccess || { ok: false };
         setStatusText(WRITE_PERMISSION_MESSAGE);
+      } else {
+        setStatusText("не удалось начать загрузку");
       }
       console.log("Download did not start", res.error || "canceled");
     } else {
+      if (downloadInProgress && currentPhase === "download") activeDownloadUrl = res.url;
       console.log("Download started, saving to", res.path);
     }
   } catch (err) {
@@ -816,12 +772,17 @@ downloadBtn.addEventListener("click", async () => {
     downloadEta.textContent = "";
     activeDownloadUrl = null;
     activeDownloadGame = null;
+    activeDownloadSource = null;
+    setStatusText("не удалось начать загрузку");
     console.error("Failed to start download:", err);
   } finally {
     actionLock = false;
     updatePlayButton();
   }
-});
+}
+
+downloadBtn.addEventListener("click", () => handleDownloadClick("primary"));
+backupDownloadBtn.addEventListener("click", () => handleDownloadClick("backup"));
 
 cancelBtn.addEventListener("click", async () => {
   if (actionLock || !downloadInProgress || currentPhase !== "download" || !activeDownloadUrl) return;
@@ -911,6 +872,7 @@ window.api.onLauncherUpdateState(state => {
 
 window.api.onDownloadProgress(info => {
   currentPhase = "download";
+  activeDownloadUrl = info.url || activeDownloadUrl;
   if (info.received !== latestDownloadInfo?.received) lastDownloadProgressMs = Date.now();
   latestDownloadInfo = info;
   downloadInProgress = true;
@@ -944,6 +906,7 @@ window.api.onDownloadDone(info => {
     currentPhase = "error";
     downloadInProgress = false;
     activeDownloadGame = null;
+    activeDownloadSource = null;
     if (downloadStats) {
       downloadStats.textContent = info.state === "cancelled" ? "загрузка отменена" : "загрузка прервана";
     }
@@ -979,6 +942,7 @@ window.api.onExtractDone(info => {
   currentPhase = "done";
   downloadInProgress = false;
   activeDownloadGame = null;
+  activeDownloadSource = null;
   if (info.versionUpdate && !info.versionUpdate.ok && !info.versionUpdate.skipped) {
     console.warn("version update failed", info.versionUpdate);
   }
@@ -994,6 +958,7 @@ window.api.onExtractError(info => {
   currentPhase = "error";
   downloadInProgress = false;
   activeDownloadGame = null;
+  activeDownloadSource = null;
   downloadEta.textContent = "";
   if (downloadStats) {
     downloadStats.textContent = "ошибка распаковки";
@@ -1024,10 +989,6 @@ window.api.onGameError(info => {
   updatePlayButton();
   console.error("game error:", info.error || info.message || JSON.stringify(info));
 });
-
-function applyVersionState(gameName, res) {
-  setPresence(gameName, !!res.installed, !!res.exeExists, !!res.updateAvailable, res.local, res.remote, !!res.remoteAvailable, res.downloadUrl || "", res.remoteSource || null, res);
-}
 
 window.api.onGameVersionsChecked(states => {
   if (!gamesDirConfigured || downloadInProgress || versionCheckInProgress || actionLock) return;

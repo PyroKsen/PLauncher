@@ -15,7 +15,7 @@ contextBridge.exposeInMainWorld('api', {
   minimizeWindow: () => ipcRenderer.invoke('minimize-window'),
   closeWindow: () => ipcRenderer.invoke('close-window'),
   openGameFolder: (gameName) => ipcRenderer.invoke('open-game-folder', gameName),
-  startDownload: (url, gameName, remoteVersion, remoteDirName) => ipcRenderer.invoke('start-download', url, gameName, remoteVersion, remoteDirName),
+  startDownload: (gameName, source) => ipcRenderer.invoke('start-download', gameName, source),
   controlDownload: (action, url) => ipcRenderer.invoke('download-control', action, url),
   onExtractStart: (cb) => ipcRenderer.on('extract-start', (e, d) => cb(d)),
   onExtractDone: (cb) => ipcRenderer.on('extract-done', (e, d) => cb(d)),
