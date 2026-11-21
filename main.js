@@ -23,6 +23,7 @@ const DOWNLOAD_FILE_PREFIX = '.plauncher-download-';
 const WRITE_TEST_PREFIX = '.pl_launcher_write_test_';
 const WINDOW_ICON = path.join(__dirname, 'assets', 'images', 'иконка лаунчер.png');
 const TRAY_ICON = path.join(__dirname, 'assets', 'images', 'иконка-лаунчер.ico');
+const APP_USER_MODEL_ID = 'com.pyroksen.plauncher';
 const AUTOSTART_ARG = '--launch-in-tray';
 const GAME_UPDATE_INTERVAL_MS = 30 * 60 * 1000;
 const SETTINGS_FILE_NAME = 'settings.json';
@@ -1003,7 +1004,11 @@ async function validateZipArchive(zipPath, targetDir, expectedRootName = null) {
 if (hasSingleInstanceLock) app.whenReady().then(async () => {
     setupFileLogging();
     if (process.platform === 'win32' && app.isPackaged) {
-      app.setAppUserModelId(require('./package.json').build.appId);
+      try {
+        app.setAppUserModelId(APP_USER_MODEL_ID);
+      } catch (err) {
+        console.warn('Could not set Windows application ID:', err);
+      }
     }
     setupTray();
     await configureLoginItem();
@@ -1389,6 +1394,10 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
         if (!isQuitting) void checkLauncherUpdate();
       }, LAUNCHER_UPDATE_CHECK_DELAY_MS);
     }
+}).catch(err => {
+  console.error('Launcher initialization failed:', err);
+  if (showWindowOnStart) dialog.showErrorBox('PLauncher', 'Не удалось запустить лаунчер. Подробности в журнале.');
+  app.exit(1);
 });
 
 
